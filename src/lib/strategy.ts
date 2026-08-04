@@ -204,13 +204,13 @@ export function evaluateStrategy(prices: number[], config: Partial<StrategyConfi
   const structuralTrigger = side === 'LONG' ? (longBreakout || longReclaim) : (shortBreakdown || shortReclaim);
 
   if (score < cfg.minScore) {
-    return waitSignal(entry, [`Score ${Math.max(0, Math.round(score))}/100 below ${cfg.minScore}`, ...reasons]);
+    return waitSignal(entry, [`Score ${Math.max(0, Math.round(score))}/100 below ${cfg.minScore}`, ...reasons], score);
   }
   if (!structuralTrigger) {
-    return waitSignal(entry, ['No breakout/reclaim trigger', ...reasons]);
+    return waitSignal(entry, ['No breakout/reclaim trigger', ...reasons], score);
   }
   if (atr <= 0 || range50 <= 0) {
-    return waitSignal(entry, ['Invalid volatility/structure measurement']);
+    return waitSignal(entry, ['Invalid volatility/structure measurement'], score);
   }
 
   const stopDistance = Math.max(atr * cfg.atrStopMultiple, entry * 0.0018);
@@ -227,7 +227,7 @@ export function evaluateStrategy(prices: number[], config: Partial<StrategyConfi
       `Score ${Math.round(score)}/100 passed`,
       `Defensible R ${Number.isFinite(projectedR) ? projectedR.toFixed(1) : '0.0'}x below ${cfg.minRiskReward}x minimum`,
       ...reasons,
-    ]);
+    ], score);
   }
 
   const riskReward = clamp(projectedR, cfg.minRiskReward, cfg.maxRiskReward);
@@ -252,11 +252,12 @@ export function evaluateStrategy(prices: number[], config: Partial<StrategyConfi
   };
 }
 
-function waitSignal(entry: number, reasons: string[]): StrategySignal {
+function waitSignal(entry: number, reasons: string[], score = 0): StrategySignal {
+  const normalizedScore = Math.round(clamp(score, 0, 100));
   return {
     action: 'WAIT',
-    score: 0,
-    confidence: 0,
+    score: normalizedScore,
+    confidence: normalizedScore,
     strategy: 'No Trade',
     entry,
     stopLoss: entry,
