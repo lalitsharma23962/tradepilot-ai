@@ -4,6 +4,7 @@ import type { AiRecommendation, MarketTick, Position } from './types';
 import { evaluateStrategy, type StrategySignal } from './strategy';
 
 // PAPER TRADING ONLY. No broker/exchange API is called by this module.
+// This engine is deliberately conservative: no trade is treated as certain.
 const SYMBOLS = [
   { symbol: 'BTC/USDT', base: 68000, vol: 0.0045 },
   { symbol: 'ETH/USDT', base: 3500, vol: 0.006 },
@@ -16,14 +17,21 @@ const SYMBOLS = [
 ];
 
 const STRATEGY = {
-  minScore: 88,
+  minScore: 90,
   minRiskReward: 10,
   maxRiskReward: 15,
   atrStopMultiple: 1.0,
-  lookback: 160,
-  maxTradesPerSession: 8,
+  lookback: 180,
+  maxTradesPerSession: 6,
   maxConsecutiveLosses: 2,
-  cooldownTicks: 12,
+  cooldownTicks: 18,
+  // Risk controls are expressed as equity percentages, not position size.
+  riskPerTradePct: 0.35,
+  maxSessionLossPct: 2.0,
+  maxAllocationPct: 20,
+  breakEvenAtR: 2,
+  trailAtR: 4,
+  trailLockR: 2,
 };
 
 interface PriceState {
@@ -40,7 +48,7 @@ interface PriceState {
 function mulberry32(seed: number) {
   return function () {
     seed |= 0;
-    seed = (seed + 0x6d2b79f5) | 0;
+    seed = (seed + 0x6d2b79f6) | 0;
     let t = Math.imul(seed ^ (seed >>> 15), 1 | seed);
     t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t;
     return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
@@ -57,17 +65,20 @@ let sessionTrades = 0;
 let consecutiveLosses = 0;
 let lastEntryTick = -Infinity;
 let tradeDayKey = '';
+let sessionStartEquity = 10000;
 
 function currentDayKey(): string {
   return new Date().toISOString().slice(0, 10);
 }
 
-function resetDailyCountersIfNeeded(): void {
+async function resetDailyCountersIfNeeded(): Promise<void> {
   const key = currentDayKey();
   if (tradeDayKey !== key) {
     tradeDayKey = key;
     sessionTrades = 0;
     consecutiveLosses = 0;
+    const account = await getAccount();
+    sessionStartEquity = account.equity;
   }
 }
 
@@ -103,7 +114,7 @@ export function getMarketTicks(): MarketTick[] {
   });
 }
 
-export function getPriceHistory(symbol: string, points = 160): { ts: number; price: number }[] {
+export function getPriceHistory(symbol: string, points = 180): { ts: number; price: number }[] {
   seedPriceStates();
   const s = priceStates.get(symbol);
   return s ? s.history.slice(-points) : [];
@@ -116,6 +127,8 @@ function advancePrices() {
     if (s.regimeTicks >= 70) {
       s.regimeTicks = 0;
       const r = s.rng();
+      // Persistent regimes make the synthetic feed capable of producing
+      // meaningful continuation trades instead of pure white-noise entries.
       s.regimeDrift = r < 0.42 ? (s.rng() > 0.5 ? 0.0011 : -0.0011) : 0;
     }
     const meanReversion = ((s.base - s.price) / s.base) * 0.002;
@@ -137,14 +150,15 @@ export async function startEngine(): Promise<{ ok: boolean; message: string }> {
   const account = await getAccount();
   if (account.bot_status === 'RUNNING') return { ok: false, message: 'Bot is already RUNNING. Duplicate start rejected.' };
   seedPriceStates();
-  resetDailyCountersIfNeeded();
+  await resetDailyCountersIfNeeded();
+  sessionStartEquity = account.equity;
   engineRunning = true;
   lastEntryTick = -Infinity;
   await execute(`UPDATE tp_account SET bot_status = 'RUNNING', started_at = now(), last_tick_at = now() WHERE id = 1;`);
   tickTimer = setInterval(tick, 2000);
   snapshotTimer = setInterval(takeSnapshot, 10000);
   setTimeout(tick, 100);
-  return { ok: true, message: 'Selective paper bot started. Score >= 88 and minimum 10R potential required.' };
+  return { ok: true, message: 'Selective v4 paper bot started. Score >= 90 and defensible 10R-15R potential required.' };
 }
 
 export async function stopEngine(): Promise<{ ok: boolean; message: string }> {
@@ -167,7 +181,7 @@ async function tick() {
   if (!engineRunning || ticking) return;
   ticking = true;
   try {
-    resetDailyCountersIfNeeded();
+    await resetDailyCountersIfNeeded();
     advancePrices();
     const account = await getAccount();
     const positions = await getPositions();
@@ -178,17 +192,27 @@ async function tick() {
       const newPrice = round(ps.price, pos.entry_price >= 100 ? 2 : 4);
       const pnl = calcUnrealizedPnl(pos, newPrice);
       await execute(`UPDATE tp_positions SET current_price = $1, unrealized_pnl = $2 WHERE id = $3;`, [newPrice, pnl, pos.id]);
+
+      // Protect profitable runners while leaving the 10R-15R target intact.
+      await manageRunner(pos, newPrice);
       const slHit = pos.side === 'LONG' ? newPrice <= pos.stop_loss : newPrice >= pos.stop_loss;
       const tpHit = pos.side === 'LONG' ? newPrice >= pos.take_profit : newPrice <= pos.take_profit;
-      if (slHit || tpHit) await closePosition(pos.id, newPrice, slHit ? 'Stop Loss' : 'Take Profit');
+      if (slHit || tpHit) await closePosition(pos.id, newPrice, slHit ? 'Stop Loss / Protected Runner' : 'Take Profit');
     }
 
     await recomputeEquity();
+    const currentAccount = await getAccount();
     const currentPositions = await getPositions();
+    const sessionDrawdown = sessionStartEquity > 0 ? ((sessionStartEquity - currentAccount.equity) / sessionStartEquity) * 100 : 0;
+
+    // Once the daily loss budget is hit, manage existing positions but do not
+    // open another one. This prevents the old v2 behaviour of trading through
+    // a bad regime until the account is deeply underwater.
     if (
-      currentPositions.length < account.max_positions &&
+      currentPositions.length < currentAccount.max_positions &&
       sessionTrades < STRATEGY.maxTradesPerSession &&
       consecutiveLosses < STRATEGY.maxConsecutiveLosses &&
+      sessionDrawdown < STRATEGY.maxSessionLossPct &&
       tickCount - lastEntryTick >= STRATEGY.cooldownTicks
     ) {
       await tryOpenPosition();
@@ -196,7 +220,7 @@ async function tick() {
     await recomputeEquity();
     await execute(`UPDATE tp_account SET last_tick_at = now() WHERE id = 1;`);
   } catch (err) {
-    console.error('[engine-v3] tick error:', err);
+    console.error('[engine-v4] tick error:', err);
   } finally {
     ticking = false;
   }
@@ -205,6 +229,28 @@ async function tick() {
 function calcUnrealizedPnl(pos: Position, currentPrice: number): number {
   const direction = pos.side === 'LONG' ? 1 : -1;
   return round(direction * (currentPrice - pos.entry_price) * pos.quantity, 2);
+}
+
+async function manageRunner(pos: Position, currentPrice: number): Promise<void> {
+  const initialRisk = Math.abs(pos.entry_price - pos.stop_loss);
+  if (initialRisk <= 0) return;
+  const favorableMove = pos.side === 'LONG' ? currentPrice - pos.entry_price : pos.entry_price - currentPrice;
+  const r = favorableMove / initialRisk;
+  if (r < STRATEGY.breakEvenAtR) return;
+
+  let newStop = pos.stop_loss;
+  if (r >= STRATEGY.trailAtR) {
+    newStop = pos.side === 'LONG'
+      ? Math.max(pos.stop_loss, pos.entry_price + initialRisk * STRATEGY.trailLockR)
+      : Math.min(pos.stop_loss, pos.entry_price - initialRisk * STRATEGY.trailLockR);
+  } else {
+    newStop = pos.entry_price;
+  }
+
+  const improves = pos.side === 'LONG' ? newStop > pos.stop_loss : newStop < pos.stop_loss;
+  if (improves) {
+    await execute(`UPDATE tp_positions SET stop_loss = $1 WHERE id = $2;`, [round(newStop, pos.entry_price >= 100 ? 2 : 4), pos.id]);
+  }
 }
 
 async function recomputeEquity() {
@@ -229,11 +275,7 @@ async function tryOpenPosition(): Promise<void> {
   for (const state of candidates) {
     const signal = evaluateStrategy(state.history.map((x) => x.price), STRATEGY);
     if (signal.action === 'WAIT') continue;
-    if (
-      !best ||
-      signal.score > best.signal.score ||
-      (signal.score === best.signal.score && signal.riskReward > best.signal.riskReward)
-    ) {
+    if (!best || signal.score > best.signal.score || (signal.score === best.signal.score && signal.riskReward > best.signal.riskReward)) {
       best = { state, signal };
     }
   }
@@ -241,14 +283,21 @@ async function tryOpenPosition(): Promise<void> {
 
   const { state, signal } = best;
   const price = round(state.price, state.price >= 100 ? 2 : 4);
-  const allocPct = Math.min(account.max_allocation_pct, account.default_allocation_pct) / 100;
-  const targetNotional = round(account.equity * allocPct, 2);
-  if (targetNotional > account.cash || targetNotional < 1) return;
-  const quantity = round(targetNotional / price, 8);
-  if (quantity <= 0) return;
   const stopLoss = round(signal.stopLoss, price >= 100 ? 2 : 4);
   const takeProfit = round(signal.takeProfit, price >= 100 ? 2 : 4);
-  if (Math.abs(price - stopLoss) <= 0) return;
+  const riskPerUnit = Math.abs(price - stopLoss);
+  if (riskPerUnit <= 0 || signal.riskReward < STRATEGY.minRiskReward) return;
+
+  // Size from risk first, then cap notional. This makes the 10R/15R objective
+  // meaningful: a stop hit cannot consume a large fraction of the account.
+  const riskBudget = account.equity * (STRATEGY.riskPerTradePct / 100);
+  const riskSizedNotional = riskBudget * price / riskPerUnit;
+  const allocationCap = Math.min(account.max_allocation_pct, STRATEGY.maxAllocationPct) / 100;
+  const targetNotional = round(Math.min(riskSizedNotional, account.equity * allocationCap), 2);
+  if (targetNotional > account.cash || targetNotional < 1) return;
+
+  const quantity = round(targetNotional / price, 8);
+  if (quantity <= 0) return;
 
   await execute(
     `INSERT INTO tp_positions (symbol, side, quantity, entry_price, current_price, notional, unrealized_pnl, stop_loss, take_profit, strategy, status)
@@ -298,7 +347,7 @@ async function takeSnapshot() {
     const unrealized = positions.reduce((a, p) => a + p.unrealized_pnl, 0);
     await execute(`INSERT INTO tp_snapshots (equity, cash, open_value, unrealized_pnl, realized_pnl, ts) VALUES ($1, $2, $3, $4, $5, now());`, [account.equity, account.cash, openValue, unrealized, account.realized_pnl]);
   } catch (err) {
-    console.error('[engine-v3] snapshot error:', err);
+    console.error('[engine-v4] snapshot error:', err);
   }
 }
 
@@ -317,6 +366,7 @@ export async function resetAccount(): Promise<{ ok: boolean; message: string }> 
   consecutiveLosses = 0;
   lastEntryTick = -Infinity;
   tradeDayKey = currentDayKey();
+  sessionStartEquity = 10000;
   return { ok: true, message: 'Account reset to $10,000.' };
 }
 
