@@ -4,7 +4,8 @@ import type { AiRecommendation, MarketTick, Position } from './types';
 import { evaluateStrategy, type StrategySignal } from './strategy';
 
 // PAPER TRADING ONLY. No broker/exchange API is called by this module.
-// This engine is deliberately conservative: no trade is treated as certain.
+// Entry frequency is controlled by positions, cooldown, confidence, loss pause,
+// and session drawdown. There is intentionally no six-trade session cap.
 const SYMBOLS = [
   { symbol: 'BTC/USDT', base: 68000, vol: 0.0045 },
   { symbol: 'ETH/USDT', base: 3500, vol: 0.006 },
@@ -22,7 +23,6 @@ const STRATEGY = {
   maxRiskReward: 15,
   atrStopMultiple: 1.0,
   lookback: 180,
-  maxTradesPerSession: 6,
   maxConsecutiveLosses: 2,
   cooldownTicks: 18,
   riskPerTradePct: 0.35,
@@ -33,10 +33,8 @@ const STRATEGY = {
   trailLockR: 2,
 };
 
-// A consecutive-loss guard must pause entries, not permanently disable them.
-// The old implementation could reach 2 losses and then never trade again because
-// the counter could only reset after a winning trade, while the guard prevented
-// the next trade from ever being opened. At a 2s tick, 30 ticks = 60 seconds.
+// Two consecutive losses pause entries for 60 seconds, then the engine resumes
+// evaluating fresh setups. The pause is not permanent.
 const LOSS_PAUSE_TICKS = 30;
 
 interface PriceState {
@@ -66,43 +64,34 @@ let engineRunning = false;
 let tickTimer: ReturnType<typeof setInterval> | null = null;
 let snapshotTimer: ReturnType<typeof setInterval> | null = null;
 let ticking = false;
-let sessionTrades = 0;
 let consecutiveLosses = 0;
 let lossPauseUntilTick = -Infinity;
 let lastEntryTick = -Infinity;
 let tradeDayKey = '';
 let sessionStartEquity = 10000;
 
-function currentDayKey(): string {
-  return new Date().toISOString().slice(0, 10);
-}
+function currentDayKey(): string { return new Date().toISOString().slice(0, 10); }
 
 async function resetDailyCountersIfNeeded(): Promise<void> {
   const key = currentDayKey();
   if (tradeDayKey !== key) {
     tradeDayKey = key;
-    sessionTrades = 0;
     consecutiveLosses = 0;
     lossPauseUntilTick = -Infinity;
-    const account = await getAccount();
-    sessionStartEquity = account.equity;
+    sessionStartEquity = (await getAccount()).equity;
   }
 }
 
 function seedPriceStates() {
   if (priceStates.size > 0) return;
   const now = Date.now();
-  const seedPoints = STRATEGY.lookback;
   for (const s of SYMBOLS) {
     const rng = mulberry32(Math.floor(s.base * 1000) + 17391);
     let price = s.base;
     let regimeDrift = 0;
     let regimeTicks = 0;
     const history: { ts: number; price: number }[] = [];
-
-    // Seed a full lookback immediately so indicators, confidence, and the chart
-    // are usable as soon as the paper engine starts. These are simulated points.
-    for (let i = seedPoints - 1; i >= 0; i--) {
+    for (let i = STRATEGY.lookback - 1; i >= 0; i--) {
       regimeTicks++;
       if (regimeTicks >= 70) {
         regimeTicks = 0;
@@ -114,33 +103,17 @@ function seedPriceStates() {
       price = Math.max(0.0001, price * (1 + regimeDrift + meanReversion + shock));
       history.push({ ts: now - i * 2000, price });
     }
-
-    priceStates.set(s.symbol, {
-      symbol: s.symbol,
-      price,
-      base: s.base,
-      vol: s.vol,
-      rng,
-      history,
-      regimeDrift,
-      regimeTicks,
-    });
+    priceStates.set(s.symbol, { symbol: s.symbol, price, base: s.base, vol: s.vol, rng, history, regimeDrift, regimeTicks });
   }
 }
 
-function clampScore(value: number): number {
-  return Math.max(60, Math.min(95, Math.round(value)));
-}
+function clampScore(value: number): number { return Math.max(60, Math.min(95, Math.round(value))); }
 
 function riskProfile(riskLevel: string, confidenceThreshold: number) {
   const minScore = clampScore(confidenceThreshold);
-  if (riskLevel === 'Conservative') {
-    return { minScore, riskPerTradePct: 0.20, maxTrades: 4, maxAllocationPct: 15 };
-  }
-  if (riskLevel === 'Aggressive') {
-    return { minScore, riskPerTradePct: 0.50, maxTrades: 8, maxAllocationPct: 20 };
-  }
-  return { minScore, riskPerTradePct: STRATEGY.riskPerTradePct, maxTrades: STRATEGY.maxTradesPerSession, maxAllocationPct: 18 };
+  if (riskLevel === 'Conservative') return { minScore, riskPerTradePct: 0.20, maxAllocationPct: 15 };
+  if (riskLevel === 'Aggressive') return { minScore, riskPerTradePct: 0.50, maxAllocationPct: 20 };
+  return { minScore, riskPerTradePct: STRATEGY.riskPerTradePct, maxAllocationPct: 18 };
 }
 
 export function getTickCount(): number { return tickCount; }
@@ -149,19 +122,13 @@ export function getMarketTicks(): MarketTick[] {
   seedPriceStates();
   return Array.from(priceStates.values()).map((s) => {
     const prev = s.history.length > 1 ? s.history[s.history.length - 2].price : s.price;
-    return {
-      symbol: s.symbol,
-      price: round(s.price, s.price >= 100 ? 2 : 4),
-      change_pct: round(((s.price - prev) / prev) * 100, 2),
-      ts: s.history[s.history.length - 1].ts,
-    };
+    return { symbol: s.symbol, price: round(s.price, s.price >= 100 ? 2 : 4), change_pct: round(((s.price - prev) / prev) * 100, 2), ts: s.history[s.history.length - 1].ts };
   });
 }
 
 export function getPriceHistory(symbol: string, points = 180): { ts: number; price: number }[] {
   seedPriceStates();
-  const s = priceStates.get(symbol);
-  return s ? s.history.slice(-points) : [];
+  return priceStates.get(symbol)?.history.slice(-points) ?? [];
 }
 
 function advancePrices() {
@@ -183,7 +150,7 @@ function advancePrices() {
 }
 
 function round(v: number, dp = 2): number {
-  const f = Math.pow(10, dp);
+  const f = 10 ** dp;
   return Math.round(v * f) / f;
 }
 
@@ -227,13 +194,11 @@ async function tick() {
     await resetDailyCountersIfNeeded();
     advancePrices();
     const positions = await getPositions();
-
     for (const pos of positions) {
       const ps = priceStates.get(pos.symbol);
       if (!ps) continue;
       const newPrice = round(ps.price, pos.entry_price >= 100 ? 2 : 4);
-      const pnl = calcUnrealizedPnl(pos, newPrice);
-      await execute(`UPDATE tp_positions SET current_price = $1, unrealized_pnl = $2 WHERE id = $3;`, [newPrice, pnl, pos.id]);
+      await execute(`UPDATE tp_positions SET current_price = $1, unrealized_pnl = $2 WHERE id = $3;`, [newPrice, calcUnrealizedPnl(pos, newPrice), pos.id]);
       await manageRunner(pos, newPrice);
       const slHit = pos.side === 'LONG' ? newPrice <= pos.stop_loss : newPrice >= pos.stop_loss;
       const tpHit = pos.side === 'LONG' ? newPrice >= pos.take_profit : newPrice <= pos.take_profit;
@@ -241,23 +206,23 @@ async function tick() {
     }
 
     await recomputeEquity();
-    const currentAccount = await getAccount();
+    const account = await getAccount();
     const currentPositions = await getPositions();
-    const sessionDrawdown = sessionStartEquity > 0 ? ((sessionStartEquity - currentAccount.equity) / sessionStartEquity) * 100 : 0;
-    const profile = riskProfile(currentAccount.risk_level, currentAccount.confidence_threshold_pct);
+    const sessionDrawdown = sessionStartEquity > 0 ? ((sessionStartEquity - account.equity) / sessionStartEquity) * 100 : 0;
+    const profile = riskProfile(account.risk_level, account.confidence_threshold_pct);
 
-    // After the loss circuit breaker fires, pause for a finite period and then
-    // allow the strategy to re-evaluate fresh market conditions. Do not require
-    // a win to clear the breaker because that would make the breaker permanent.
     if (consecutiveLosses >= STRATEGY.maxConsecutiveLosses && tickCount >= lossPauseUntilTick) {
       consecutiveLosses = 0;
       lossPauseUntilTick = -Infinity;
     }
-
     const lossPauseActive = tickCount < lossPauseUntilTick;
+
+    // IMPORTANT: there is no sessionTrades/maxTrades gate here. The previous
+    // implementation stopped permanently after exactly six Balanced trades.
+    // The engine may continue taking qualified setups while all other risk gates
+    // remain active.
     if (
-      currentPositions.length < currentAccount.max_positions &&
-      sessionTrades < profile.maxTrades &&
+      currentPositions.length < account.max_positions &&
       !lossPauseActive &&
       sessionDrawdown < STRATEGY.maxSessionLossPct &&
       tickCount - lastEntryTick >= STRATEGY.cooldownTicks
@@ -284,20 +249,11 @@ async function manageRunner(pos: Position, currentPrice: number): Promise<void> 
   const favorableMove = pos.side === 'LONG' ? currentPrice - pos.entry_price : pos.entry_price - currentPrice;
   const r = favorableMove / initialRisk;
   if (r < STRATEGY.breakEvenAtR) return;
-
-  let newStop = pos.stop_loss;
-  if (r >= STRATEGY.trailAtR) {
-    newStop = pos.side === 'LONG'
-      ? Math.max(pos.stop_loss, pos.entry_price + initialRisk * STRATEGY.trailLockR)
-      : Math.min(pos.stop_loss, pos.entry_price - initialRisk * STRATEGY.trailLockR);
-  } else {
-    newStop = pos.entry_price;
-  }
-
+  const newStop = r >= STRATEGY.trailAtR
+    ? (pos.side === 'LONG' ? Math.max(pos.stop_loss, pos.entry_price + initialRisk * STRATEGY.trailLockR) : Math.min(pos.stop_loss, pos.entry_price - initialRisk * STRATEGY.trailLockR))
+    : pos.entry_price;
   const improves = pos.side === 'LONG' ? newStop > pos.stop_loss : newStop < pos.stop_loss;
-  if (improves) {
-    await execute(`UPDATE tp_positions SET stop_loss = $1 WHERE id = $2;`, [round(newStop, pos.entry_price >= 100 ? 2 : 4), pos.id]);
-  }
+  if (improves) await execute(`UPDATE tp_positions SET stop_loss = $1 WHERE id = $2;`, [round(newStop, pos.entry_price >= 100 ? 2 : 4), pos.id]);
 }
 
 async function recomputeEquity() {
@@ -305,9 +261,7 @@ async function recomputeEquity() {
   const positions = await getPositions();
   const openValue = positions.reduce((a, p) => a + p.notional, 0);
   const unrealized = positions.reduce((a, p) => a + p.unrealized_pnl, 0);
-  const equity = round(account.cash + openValue + unrealized, 2);
-  const totalPnl = round(account.realized_pnl + unrealized, 2);
-  await execute(`UPDATE tp_account SET equity = $1, total_pnl = $2 WHERE id = 1;`, [equity, totalPnl]);
+  await execute(`UPDATE tp_account SET equity = $1, total_pnl = $2 WHERE id = 1;`, [round(account.cash + openValue + unrealized, 2), round(account.realized_pnl + unrealized, 2)]);
 }
 
 async function tryOpenPosition(profile: ReturnType<typeof riskProfile>): Promise<void> {
@@ -320,15 +274,9 @@ async function tryOpenPosition(profile: ReturnType<typeof riskProfile>): Promise
 
   let best: { state: PriceState; signal: StrategySignal } | null = null;
   for (const state of candidates) {
-    const signal = evaluateStrategy(state.history.map((x) => x.price), {
-      ...STRATEGY,
-      minScore: profile.minScore,
-      riskPerTradePct: undefined,
-    });
+    const signal = evaluateStrategy(state.history.map((x) => x.price), { ...STRATEGY, minScore: profile.minScore, riskPerTradePct: undefined });
     if (signal.action === 'WAIT') continue;
-    if (!best || signal.score > best.signal.score || (signal.score === best.signal.score && signal.riskReward > best.signal.riskReward)) {
-      best = { state, signal };
-    }
+    if (!best || signal.score > best.signal.score || (signal.score === best.signal.score && signal.riskReward > best.signal.riskReward)) best = { state, signal };
   }
   if (!best) return;
 
@@ -344,7 +292,6 @@ async function tryOpenPosition(profile: ReturnType<typeof riskProfile>): Promise
   const allocationCap = Math.min(account.max_allocation_pct, profile.maxAllocationPct) / 100;
   const targetNotional = round(Math.min(riskSizedNotional, account.equity * allocationCap), 2);
   if (targetNotional > account.cash || targetNotional < 1) return;
-
   const quantity = round(targetNotional / price, 8);
   if (quantity <= 0) return;
 
@@ -354,7 +301,6 @@ async function tryOpenPosition(profile: ReturnType<typeof riskProfile>): Promise
     [state.symbol, signal.action, quantity, price, price, targetNotional, stopLoss, takeProfit, `${signal.strategy} ${signal.riskReward.toFixed(1)}R`],
   );
   await execute(`UPDATE tp_account SET cash = cash - $1 WHERE id = 1;`, [targetNotional]);
-  sessionTrades++;
   lastEntryTick = tickCount;
 }
 
@@ -366,7 +312,7 @@ export async function closePosition(positionId: string, exitPrice?: number, reas
     id: String(r.id), symbol: String(r.symbol), side: r.side as 'LONG' | 'SHORT', quantity: Number(r.quantity),
     entry_price: Number(r.entry_price), current_price: Number(r.current_price), notional: Number(r.notional),
     unrealized_pnl: Number(r.unrealized_pnl), stop_loss: Number(r.stop_loss), take_profit: Number(r.take_profit),
-    strategy: String(r.strategy ?? 'Strategy'), status: String(r.status ?? 'OPEN'), opened_at: new Date(r.opened_at as string).toISOString(),
+    strategy: String(r.strategy ?? 'Strategy'), opened_at: new Date(r.opened_at as string).toISOString(),
   };
   const ps = priceStates.get(pos.symbol);
   const exit = exitPrice ?? (ps ? round(ps.price, pos.entry_price >= 100 ? 2 : 4) : pos.current_price);
@@ -384,9 +330,7 @@ export async function closePosition(positionId: string, exitPrice?: number, reas
   await execute(`UPDATE tp_account SET cash = cash + $1, realized_pnl = realized_pnl + $2 WHERE id = 1;`, [cashReturn, pnl]);
   if (pnl < 0) {
     consecutiveLosses++;
-    if (consecutiveLosses >= STRATEGY.maxConsecutiveLosses) {
-      lossPauseUntilTick = tickCount + LOSS_PAUSE_TICKS;
-    }
+    if (consecutiveLosses >= STRATEGY.maxConsecutiveLosses) lossPauseUntilTick = tickCount + LOSS_PAUSE_TICKS;
   } else {
     consecutiveLosses = 0;
     lossPauseUntilTick = -Infinity;
@@ -419,7 +363,6 @@ export async function resetAccount(): Promise<{ ok: boolean; message: string }> 
   await resetDatabase();
   priceStates.clear();
   tickCount = 0;
-  sessionTrades = 0;
   consecutiveLosses = 0;
   lossPauseUntilTick = -Infinity;
   lastEntryTick = -Infinity;
@@ -432,14 +375,12 @@ export async function getAiRecommendation(symbol?: string): Promise<AiRecommenda
   seedPriceStates();
   const state = symbol ? priceStates.get(symbol) : priceStates.get('BTC/USDT');
   if (!state) return { symbol: symbol ?? 'BTC/USDT', action: 'WAIT', confidence: 0, threshold: 90, entry: 0, stop_loss: 0, take_profit: 0, risk_score: 100, explanation: 'No market data available.' };
-
   const account = await getAccount();
   const threshold = clampScore(account.confidence_threshold_pct);
   const signal = evaluateStrategy(state.history.map((x) => x.price), { ...STRATEGY, minScore: threshold });
   const thresholdReason = signal.action === 'WAIT' && signal.confidence < threshold
     ? `Confidence ${signal.confidence}/100 below threshold ${threshold}/100.`
     : `Threshold ${threshold}/100.`;
-
   return {
     symbol: state.symbol,
     action: signal.action,
