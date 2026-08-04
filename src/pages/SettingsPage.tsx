@@ -34,7 +34,6 @@ export function SettingsPage() {
 
   return (
     <div className="mx-auto max-w-3xl space-y-6 p-6">
-      {/* Trading mode */}
       <Card>
         <CardHeader title="Trading Mode" subtitle="Paper trading is active. Live trading is not available." />
         <CardBody className="space-y-3">
@@ -55,7 +54,6 @@ export function SettingsPage() {
         </CardBody>
       </Card>
 
-      {/* API keys — informational only */}
       <Card>
         <CardHeader title="Exchange API Keys" subtitle="Not required for paper trading" />
         <CardBody className="space-y-3">
@@ -67,27 +65,17 @@ export function SettingsPage() {
           </div>
           <div>
             <label className="text-xs font-medium text-slate-500">API Key</label>
-            <input
-              disabled
-              placeholder="Disabled — paper trading only"
-              className="mt-1 w-full rounded-lg border border-slate-700 bg-slate-800/50 px-3 py-2 text-sm text-slate-500 placeholder-slate-600"
-            />
+            <input disabled placeholder="Disabled — paper trading only" className="mt-1 w-full rounded-lg border border-slate-700 bg-slate-800/50 px-3 py-2 text-sm text-slate-500 placeholder-slate-600" />
           </div>
           <div>
             <label className="text-xs font-medium text-slate-500">API Secret</label>
-            <input
-              disabled
-              type="password"
-              placeholder="Disabled — paper trading only"
-              className="mt-1 w-full rounded-lg border border-slate-700 bg-slate-800/50 px-3 py-2 text-sm text-slate-500 placeholder-slate-600"
-            />
+            <input disabled type="password" placeholder="Disabled — paper trading only" className="mt-1 w-full rounded-lg border border-slate-700 bg-slate-800/50 px-3 py-2 text-sm text-slate-500 placeholder-slate-600" />
           </div>
         </CardBody>
       </Card>
 
-      {/* Risk level */}
       <Card>
-        <CardHeader title="Risk Level" />
+        <CardHeader title="Risk Level" subtitle="Controls trade sizing and session limits; confidence threshold is set separately below." />
         <CardBody>
           <div className="grid grid-cols-3 gap-2">
             {(['Conservative', 'Balanced', 'Aggressive'] as RiskLevel[]).map((r) => (
@@ -95,11 +83,7 @@ export function SettingsPage() {
                 key={r}
                 onClick={() => update({ risk_level: r })}
                 disabled={saving}
-                className={`rounded-lg px-3 py-2.5 text-sm font-medium transition-colors ${
-                  settings.risk_level === r
-                    ? 'bg-sky-600 text-white'
-                    : 'bg-slate-800 text-slate-400 hover:bg-slate-700'
-                }`}
+                className={`rounded-lg px-3 py-2.5 text-sm font-medium transition-colors ${settings.risk_level === r ? 'bg-sky-600 text-white' : 'bg-slate-800 text-slate-400 hover:bg-slate-700'}`}
               >
                 {r}
               </button>
@@ -108,43 +92,43 @@ export function SettingsPage() {
         </CardBody>
       </Card>
 
-      {/* Max position size */}
       <Card>
-        <CardHeader title="Maximum Position Size" subtitle="5%–20% of equity. Hard limit: 20%." />
+        <CardHeader title="Minimum Confidence / Score Threshold" subtitle="70–95. A trade is eligible only when the strategy score reaches this value. Lower = more signals; higher = more selective." />
         <CardBody className="space-y-3">
           <div className="flex items-center gap-4">
             <input
               type="range"
-              min={5}
-              max={20}
+              min={70}
+              max={95}
               step={1}
-              value={settings.max_allocation_pct}
-              onChange={(e) => update({ max_allocation_pct: Number(e.target.value) })}
+              value={settings.confidence_threshold_pct}
+              onChange={(e) => update({ confidence_threshold_pct: Number(e.target.value) })}
               disabled={saving}
               className="flex-1 accent-sky-500"
             />
+            <span className="w-16 text-right text-sm font-semibold text-sky-400">{settings.confidence_threshold_pct}%</span>
+          </div>
+          <p className="text-xs text-slate-500">This is the actual entry score gate used by both the AI Recommendation panel and the paper trading engine.</p>
+        </CardBody>
+      </Card>
+
+      <Card>
+        <CardHeader title="Maximum Position Size" subtitle="5%–20% of equity. Hard limit: 20%." />
+        <CardBody className="space-y-3">
+          <div className="flex items-center gap-4">
+            <input type="range" min={5} max={20} step={1} value={settings.max_allocation_pct} onChange={(e) => update({ max_allocation_pct: Number(e.target.value) })} disabled={saving} className="flex-1 accent-sky-500" />
             <span className="w-14 text-right text-sm font-semibold text-sky-400">{settings.max_allocation_pct}%</span>
           </div>
           <p className="text-xs text-slate-500">Default allocation: {settings.default_allocation_pct}%. Engine enforces the 20% hard cap server-side.</p>
         </CardBody>
       </Card>
 
-      {/* SL / TP */}
       <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
         <Card>
           <CardHeader title="Stop Loss" subtitle="Default 2%" />
           <CardBody>
             <div className="flex items-center gap-4">
-              <input
-                type="range"
-                min={0.5}
-                max={10}
-                step={0.5}
-                value={settings.stop_loss_pct}
-                onChange={(e) => update({ stop_loss_pct: Number(e.target.value) })}
-                disabled={saving}
-                className="flex-1 accent-red-500"
-              />
+              <input type="range" min={0.5} max={10} step={0.5} value={settings.stop_loss_pct} onChange={(e) => update({ stop_loss_pct: Number(e.target.value) })} disabled={saving} className="flex-1 accent-red-500" />
               <span className="w-14 text-right text-sm font-semibold text-red-400">{settings.stop_loss_pct}%</span>
             </div>
           </CardBody>
@@ -153,44 +137,24 @@ export function SettingsPage() {
           <CardHeader title="Take Profit" subtitle="Default 4%" />
           <CardBody>
             <div className="flex items-center gap-4">
-              <input
-                type="range"
-                min={1}
-                max={20}
-                step={0.5}
-                value={settings.take_profit_pct}
-                onChange={(e) => update({ take_profit_pct: Number(e.target.value) })}
-                disabled={saving}
-                className="flex-1 accent-emerald-500"
-              />
+              <input type="range" min={1} max={20} step={0.5} value={settings.take_profit_pct} onChange={(e) => update({ take_profit_pct: Number(e.target.value) })} disabled={saving} className="flex-1 accent-emerald-500" />
               <span className="w-14 text-right text-sm font-semibold text-emerald-400">{settings.take_profit_pct}%</span>
             </div>
           </CardBody>
         </Card>
       </div>
 
-      {/* Theme */}
       <Card>
         <CardHeader title="Theme" />
         <CardBody>
           <div className="grid grid-cols-3 gap-2">
             {(['Dark', 'Light', 'System'] as ThemeMode[]).map((t) => (
-              <button
-                key={t}
-                onClick={() => update({ theme: t })}
-                disabled={saving}
-                className={`rounded-lg px-3 py-2.5 text-sm font-medium transition-colors ${
-                  settings.theme === t ? 'bg-sky-600 text-white' : 'bg-slate-800 text-slate-400 hover:bg-slate-700'
-                }`}
-              >
-                {t}
-              </button>
+              <button key={t} onClick={() => update({ theme: t })} disabled={saving} className={`rounded-lg px-3 py-2.5 text-sm font-medium transition-colors ${settings.theme === t ? 'bg-sky-600 text-white' : 'bg-slate-800 text-slate-400 hover:bg-slate-700'}`}>{t}</button>
             ))}
           </div>
         </CardBody>
       </Card>
 
-      {/* Notifications */}
       <Card>
         <CardHeader title="Notifications" />
         <CardBody className="space-y-3">
@@ -201,11 +165,7 @@ export function SettingsPage() {
           ].map((item) => (
             <label key={item.key} className="flex items-center justify-between rounded-lg bg-slate-800/40 px-4 py-3">
               <span className="text-sm text-slate-300">{item.label}</span>
-              <button
-                onClick={() => update({ [item.key]: !settings[item.key] } as Partial<typeof settings>)}
-                disabled={saving}
-                className={`relative h-6 w-11 rounded-full transition-colors ${settings[item.key] ? 'bg-sky-600' : 'bg-slate-700'}`}
-              >
+              <button onClick={() => update({ [item.key]: !settings[item.key] } as Partial<typeof settings>)} disabled={saving} className={`relative h-6 w-11 rounded-full transition-colors ${settings[item.key] ? 'bg-sky-600' : 'bg-slate-700'}`}>
                 <span className={`absolute top-0.5 h-5 w-5 rounded-full bg-white transition-transform ${settings[item.key] ? 'translate-x-5' : 'translate-x-0.5'}`} />
               </button>
             </label>
@@ -213,15 +173,11 @@ export function SettingsPage() {
         </CardBody>
       </Card>
 
-      {/* Reset */}
       <Card>
         <CardHeader title="Development Reset" subtitle="Reset account to $10,000 and clear all history" />
         <CardBody>
           <div className="flex items-center gap-3">
-            <Button variant="danger" onClick={handleReset} disabled={resetting}>
-              <RotateCcw className="h-4 w-4" />
-              Reset Account
-            </Button>
+            <Button variant="danger" onClick={handleReset} disabled={resetting}><RotateCcw className="h-4 w-4" />Reset Account</Button>
             {resetMsg && <span className="text-xs text-slate-400">{resetMsg}</span>}
           </div>
           <div className="mt-3 flex items-start gap-2 rounded-lg bg-amber-950/40 px-3 py-2 text-xs text-amber-400">
