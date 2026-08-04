@@ -402,15 +402,13 @@ export async function resetAccount(): Promise<{ ok: boolean; message: string }> 
   return { ok: true, message: 'Account reset to $10,000.' };
 }
 
-export function getAiRecommendation(symbol?: string): AiRecommendation {
+export async function getAiRecommendation(symbol?: string): Promise<AiRecommendation> {
   seedPriceStates();
   const state = symbol ? priceStates.get(symbol) : priceStates.get('BTC/USDT');
   if (!state) return { symbol: symbol ?? 'BTC/USDT', action: 'WAIT', confidence: 0, entry: 0, stop_loss: 0, take_profit: 0, risk_score: 100, explanation: 'No market data available.' };
-  const accountPromise = getAccount();
-  // The UI calls this synchronously through the API wrapper, so use the current
-  // stored account setting when available; the strategy itself remains deterministic.
-  // A fallback to the configured default keeps the recommendation useful before DB init.
-  const threshold = getConfiguredThresholdSyncFallback();
+
+  const account = await getAccount();
+  const threshold = clampScore(account.confidence_threshold_pct);
   const signal = evaluateStrategy(state.history.map((x) => x.price), { ...STRATEGY, minScore: threshold });
   return {
     symbol: state.symbol,
@@ -419,14 +417,7 @@ export function getAiRecommendation(symbol?: string): AiRecommendation {
     entry: round(signal.entry, state.price >= 100 ? 2 : 4),
     stop_loss: round(signal.stopLoss, state.price >= 100 ? 2 : 4),
     take_profit: round(signal.takeProfit, state.price >= 100 ? 2 : 4),
-    risk_score: signal.action === 'WAIT' ? Math.max(0, 100 - signal.score) : Math.max(0, 100 - signal.score),
+    risk_score: Math.max(0, 100 - signal.score),
     explanation: `${signal.strategy}: ${signal.reasons.join('; ') || 'No qualifying setup.'}${signal.action !== 'WAIT' ? ` | ${signal.riskReward.toFixed(1)}R target.` : ''} | Threshold ${threshold}/100.`,
   };
-}
-
-function getConfiguredThresholdSyncFallback(): number {
-  // The authoritative value for execution is read asynchronously in tick().
-  // Recommendations are polled frequently, so the default is intentionally
-  // stable here; the API layer exposes the current setting in Settings.
-  return clampScore(90);
 }
