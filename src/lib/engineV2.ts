@@ -33,6 +33,12 @@ const STRATEGY = {
   trailLockR: 2,
 };
 
+// A consecutive-loss guard must pause entries, not permanently disable them.
+// The old implementation could reach 2 losses and then never trade again because
+// the counter could only reset after a winning trade, while the guard prevented
+// the next trade from ever being opened. At a 2s tick, 30 ticks = 60 seconds.
+const LOSS_PAUSE_TICKS = 30;
+
 interface PriceState {
   symbol: string;
   price: number;
@@ -62,6 +68,7 @@ let snapshotTimer: ReturnType<typeof setInterval> | null = null;
 let ticking = false;
 let sessionTrades = 0;
 let consecutiveLosses = 0;
+let lossPauseUntilTick = -Infinity;
 let lastEntryTick = -Infinity;
 let tradeDayKey = '';
 let sessionStartEquity = 10000;
@@ -76,6 +83,7 @@ async function resetDailyCountersIfNeeded(): Promise<void> {
     tradeDayKey = key;
     sessionTrades = 0;
     consecutiveLosses = 0;
+    lossPauseUntilTick = -Infinity;
     const account = await getAccount();
     sessionStartEquity = account.equity;
   }
@@ -188,6 +196,7 @@ export async function startEngine(): Promise<{ ok: boolean; message: string }> {
   sessionStartEquity = account.equity;
   engineRunning = true;
   lastEntryTick = -Infinity;
+  lossPauseUntilTick = -Infinity;
   await execute(`UPDATE tp_account SET bot_status = 'RUNNING', started_at = now(), last_tick_at = now() WHERE id = 1;`);
   tickTimer = setInterval(tick, 2000);
   snapshotTimer = setInterval(takeSnapshot, 10000);
@@ -217,7 +226,6 @@ async function tick() {
   try {
     await resetDailyCountersIfNeeded();
     advancePrices();
-    const account = await getAccount();
     const positions = await getPositions();
 
     for (const pos of positions) {
@@ -238,10 +246,19 @@ async function tick() {
     const sessionDrawdown = sessionStartEquity > 0 ? ((sessionStartEquity - currentAccount.equity) / sessionStartEquity) * 100 : 0;
     const profile = riskProfile(currentAccount.risk_level, currentAccount.confidence_threshold_pct);
 
+    // After the loss circuit breaker fires, pause for a finite period and then
+    // allow the strategy to re-evaluate fresh market conditions. Do not require
+    // a win to clear the breaker because that would make the breaker permanent.
+    if (consecutiveLosses >= STRATEGY.maxConsecutiveLosses && tickCount >= lossPauseUntilTick) {
+      consecutiveLosses = 0;
+      lossPauseUntilTick = -Infinity;
+    }
+
+    const lossPauseActive = tickCount < lossPauseUntilTick;
     if (
       currentPositions.length < currentAccount.max_positions &&
       sessionTrades < profile.maxTrades &&
-      consecutiveLosses < STRATEGY.maxConsecutiveLosses &&
+      !lossPauseActive &&
       sessionDrawdown < STRATEGY.maxSessionLossPct &&
       tickCount - lastEntryTick >= STRATEGY.cooldownTicks
     ) {
@@ -365,7 +382,15 @@ export async function closePosition(positionId: string, exitPrice?: number, reas
   );
   await execute(`DELETE FROM tp_positions WHERE id = $1;`, [pos.id]);
   await execute(`UPDATE tp_account SET cash = cash + $1, realized_pnl = realized_pnl + $2 WHERE id = 1;`, [cashReturn, pnl]);
-  if (pnl < 0) consecutiveLosses++; else consecutiveLosses = 0;
+  if (pnl < 0) {
+    consecutiveLosses++;
+    if (consecutiveLosses >= STRATEGY.maxConsecutiveLosses) {
+      lossPauseUntilTick = tickCount + LOSS_PAUSE_TICKS;
+    }
+  } else {
+    consecutiveLosses = 0;
+    lossPauseUntilTick = -Infinity;
+  }
   await recomputeEquity();
   return { ok: true, message: `Position closed (${reason ?? 'Manual'}). PnL: ${pnl.toFixed(2)}` };
 }
@@ -396,6 +421,7 @@ export async function resetAccount(): Promise<{ ok: boolean; message: string }> 
   tickCount = 0;
   sessionTrades = 0;
   consecutiveLosses = 0;
+  lossPauseUntilTick = -Infinity;
   lastEntryTick = -Infinity;
   tradeDayKey = currentDayKey();
   sessionStartEquity = 10000;
@@ -410,6 +436,10 @@ export async function getAiRecommendation(symbol?: string): Promise<AiRecommenda
   const account = await getAccount();
   const threshold = clampScore(account.confidence_threshold_pct);
   const signal = evaluateStrategy(state.history.map((x) => x.price), { ...STRATEGY, minScore: threshold });
+  const thresholdReason = signal.action === 'WAIT' && signal.confidence < threshold
+    ? `Confidence ${signal.confidence}/100 below threshold ${threshold}/100.`
+    : `Threshold ${threshold}/100.`;
+
   return {
     symbol: state.symbol,
     action: signal.action,
@@ -419,6 +449,6 @@ export async function getAiRecommendation(symbol?: string): Promise<AiRecommenda
     stop_loss: round(signal.stopLoss, state.price >= 100 ? 2 : 4),
     take_profit: round(signal.takeProfit, state.price >= 100 ? 2 : 4),
     risk_score: Math.max(0, 100 - signal.score),
-    explanation: `${signal.strategy}: ${signal.reasons.join('; ') || 'No qualifying setup.'}${signal.action !== 'WAIT' ? ` | ${signal.riskReward.toFixed(1)}R target.` : ''} | Threshold ${threshold}/100.`,
+    explanation: `${signal.strategy}: ${signal.reasons.join('; ') || 'No qualifying setup.'}${signal.action !== 'WAIT' ? ` | ${signal.riskReward.toFixed(1)}R target.` : ''} | ${thresholdReason}`,
   };
 }
