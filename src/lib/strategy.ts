@@ -21,11 +21,11 @@ export interface StrategyConfig {
 }
 
 const DEFAULT_CONFIG: StrategyConfig = {
-  minScore: 88,
+  minScore: 90,
   minRiskReward: 10,
   maxRiskReward: 15,
   atrStopMultiple: 1.0,
-  lookback: 160,
+  lookback: 180,
 };
 
 function ema(values: number[], period: number): number {
@@ -83,123 +83,159 @@ function clamp(value: number, min: number, max: number): number {
 }
 
 /**
- * Selective paper-trading setup.
+ * Selective paper-trading model.
  *
- * Important: this deliberately does NOT claim that any trade is "100% sure".
- * It only enters when the available simulated price history supports a very
- * strong confluence and a mathematically defensible 10R-15R target.
+ * This is intentionally a filter, not a prediction oracle. There is no
+ * mathematically valid "100% sure" market trade. A 10R-15R target is only
+ * accepted when the observed series itself provides enough projected room.
+ *
+ * Entry logic is deliberately harder than v3:
+ *  - multi-time-horizon trend alignment
+ *  - momentum confirmation
+ *  - breakout OR controlled pullback/reclaim
+ *  - volatility regime filter
+ *  - no entry when the move is already statistically stretched
+ *  - strict defensible 10R-15R target check
  */
 export function evaluateStrategy(prices: number[], config: Partial<StrategyConfig> = {}): StrategySignal {
   const cfg = { ...DEFAULT_CONFIG, ...config };
   const clean = prices.filter((p) => Number.isFinite(p) && p > 0).slice(-cfg.lookback);
   const entry = clean[clean.length - 1] ?? 0;
 
-  if (clean.length < 100 || entry <= 0) {
-    return waitSignal(entry, ['Not enough market history for the selective model']);
+  if (clean.length < 120 || entry <= 0) {
+    return waitSignal(entry, ['Not enough history for selective confirmation']);
   }
 
+  const ema10 = ema(clean, 10);
   const ema20 = ema(clean, 20);
   const ema50 = ema(clean, 50);
   const ema100 = ema(clean, 100);
+  const atr = atrLike(clean, 20);
+  const atrFast = atrLike(clean, 8);
+  const volatility = atr / entry;
   const fast = clean.slice(-12);
   const medium = clean.slice(-30);
-  const atr = atrLike(clean, 20);
-  const volatility = atr / entry;
   const slope12 = slope(fast);
   const slopeNorm = slope12 / entry;
+  const mediumMean = mean(medium);
+  const mediumStd = std(medium);
+  const z = mediumStd > 0 ? (entry - mediumMean) / mediumStd : 0;
 
   const prior = clean.slice(0, -1);
+  const high12 = recentHigh(prior, 12);
+  const low12 = recentLow(prior, 12);
   const high20 = recentHigh(prior, 20);
   const low20 = recentLow(prior, 20);
   const high50 = recentHigh(prior, 50);
   const low50 = recentLow(prior, 50);
   const range50 = high50 - low50;
-  const z = std(medium) > 0 ? (entry - mean(medium)) / std(medium) : 0;
+
+  // A low fast/slow ATR ratio indicates compression; expansion after
+  // compression is more useful than blindly buying every new high.
+  const compressionRatio = atr > 0 ? atrFast / atr : 1;
+  const compressed = compressionRatio < 0.85;
 
   let longScore = 0;
   let shortScore = 0;
   const longReasons: string[] = [];
   const shortReasons: string[] = [];
 
-  // 100-point model: trend 30 + momentum 20 + breakout 20 + structure 15 + volatility 15.
   if (ema20 > ema50 && ema50 > ema100) {
-    longScore += 30;
-    longReasons.push('EMA20 > EMA50 > EMA100');
+    longScore += 25;
+    longReasons.push('trend aligned bullish (20>50>100 EMA)');
   }
   if (ema20 < ema50 && ema50 < ema100) {
-    shortScore += 30;
-    shortReasons.push('EMA20 < EMA50 < EMA100');
+    shortScore += 25;
+    shortReasons.push('trend aligned bearish (20<50<100 EMA)');
   }
 
-  // Normalize momentum by price. Do not multiply slope by entry again: that
-  // was a dimensional error in v2 and could manufacture unrealistic R values.
-  if (slopeNorm > volatility * 0.10) {
+  const momentumThreshold = Math.max(volatility * 0.08, 0.00015);
+  if (slopeNorm > momentumThreshold) {
     longScore += 20;
-    longReasons.push('momentum materially positive vs volatility');
+    longReasons.push('positive momentum confirmed');
   }
-  if (slopeNorm < -volatility * 0.10) {
+  if (slopeNorm < -momentumThreshold) {
     shortScore += 20;
-    shortReasons.push('momentum materially negative vs volatility');
+    shortReasons.push('negative momentum confirmed');
   }
 
-  if (entry > high20) {
+  const longBreakout = entry > high20;
+  const shortBreakdown = entry < low20;
+  const longReclaim = entry > ema20 && fast.slice(0, 6).some((p) => p <= ema20) && entry > high12;
+  const shortReclaim = entry < ema20 && fast.slice(0, 6).some((p) => p >= ema20) && entry < low12;
+
+  if (longBreakout) {
     longScore += 20;
     longReasons.push('20-bar breakout');
+  } else if (longReclaim) {
+    longScore += 18;
+    longReasons.push('EMA20 pullback/reclaim');
   }
-  if (entry < low20) {
+  if (shortBreakdown) {
     shortScore += 20;
     shortReasons.push('20-bar breakdown');
+  } else if (shortReclaim) {
+    shortScore += 18;
+    shortReasons.push('EMA20 pullback/reclaim');
   }
 
   if (entry > high50) {
     longScore += 15;
-    longReasons.push('50-bar structure breakout');
+    longReasons.push('50-bar structure expansion');
   }
   if (entry < low50) {
     shortScore += 15;
-    shortReasons.push('50-bar structure breakdown');
+    shortReasons.push('50-bar structure expansion');
   }
 
-  if (volatility >= 0.0007 && volatility <= 0.03) {
-    if (longScore > 0) {
-      longScore += 15;
-      longReasons.push('volatility regime acceptable');
-    }
-    if (shortScore > 0) {
-      shortScore += 15;
-      shortReasons.push('volatility regime acceptable');
-    }
+  if (volatility >= 0.0007 && volatility <= 0.018) {
+    longScore += longScore > 0 ? 10 : 0;
+    shortScore += shortScore > 0 ? 10 : 0;
+    if (longScore > 0) longReasons.push('volatility regime acceptable');
+    if (shortScore > 0) shortReasons.push('volatility regime acceptable');
   }
 
-  // Do not chase a statistically stretched move.
-  if (z > 2.0) longScore -= 15;
-  if (z < -2.0) shortScore -= 15;
+  if (compressed && (longBreakout || longReclaim)) {
+    longScore += 10;
+    longReasons.push('breakout followed volatility compression');
+  }
+  if (compressed && (shortBreakdown || shortReclaim)) {
+    shortScore += 10;
+    shortReasons.push('breakdown followed volatility compression');
+  }
+
+  // Penalize entries that are already too far from the short-term mean.
+  if (z > 1.8) longScore -= 18;
+  if (z < -1.8) shortScore -= 18;
 
   const side: Side = longScore >= shortScore ? 'LONG' : 'SHORT';
   const score = Math.max(longScore, shortScore);
   const reasons = side === 'LONG' ? longReasons : shortReasons;
+  const structuralTrigger = side === 'LONG' ? (longBreakout || longReclaim) : (shortBreakdown || shortReclaim);
 
   if (score < cfg.minScore) {
     return waitSignal(entry, [`Score ${Math.max(0, Math.round(score))}/100 below ${cfg.minScore}`, ...reasons]);
   }
-
+  if (!structuralTrigger) {
+    return waitSignal(entry, ['No breakout/reclaim trigger', ...reasons]);
+  }
   if (atr <= 0 || range50 <= 0) {
     return waitSignal(entry, ['Invalid volatility/structure measurement']);
   }
 
-  // Risk is volatility-based. The target is NOT fabricated by multiplying
-  // slope by entry. It is estimated from actual price displacement.
-  const stopDistance = Math.max(atr * cfg.atrStopMultiple, entry * 0.0025);
+  // Stop is based on current volatility, with a minimum distance to avoid
+  // microscopic stops in the synthetic feed.
+  const stopDistance = Math.max(atr * cfg.atrStopMultiple, entry * 0.0018);
   const stopLoss = side === 'LONG' ? entry - stopDistance : entry + stopDistance;
 
-  // 60-bar continuation estimate from observed price-per-bar momentum.
-  const momentumProjection = Math.abs(slope12) * 60;
-  const structureProjection = range50 * 1.25;
-  const projectedMove = Math.max(momentumProjection, structureProjection);
+  // Project only from observed price displacement. We deliberately refuse to
+  // invent a 10R target if the series does not contain enough room.
+  const momentumProjection = Math.abs(slope12) * 72;
+  const structureProjection = range50 * 1.15;
+  const continuationProjection = Math.abs(ema10 - ema50) * 2.5;
+  const projectedMove = Math.max(momentumProjection, structureProjection, continuationProjection);
   const projectedR = projectedMove / stopDistance;
 
-  // Strict 10R floor: if the market history cannot plausibly support it,
-  // WAIT rather than manufacture a 10R target just to satisfy the setting.
   if (!Number.isFinite(projectedR) || projectedR < cfg.minRiskReward) {
     return waitSignal(entry, [
       `Score ${Math.round(score)}/100 passed`,
@@ -214,8 +250,8 @@ export function evaluateStrategy(prices: number[], config: Partial<StrategyConfi
     : entry - stopDistance * riskReward;
 
   const strategy = reasons.some((r) => r.includes('breakout') || r.includes('breakdown'))
-    ? 'Breakout Confluence v3'
-    : 'Trend Momentum Confluence v3';
+    ? 'Breakout + Trend Confluence v4'
+    : 'Pullback + Trend Confluence v4';
 
   return {
     action: side,
