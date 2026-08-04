@@ -20,7 +20,7 @@ export async function getAccount(): Promise<Account> {
   if (rows.length === 0) {
     await execute(
       `INSERT INTO tp_account (id, cash, equity, total_pnl, realized_pnl, bot_status)
-       VALUES (1, 10000.00, 10000.00, 0.00, 0.00, 'STOPPED');`
+       VALUES (1, 10000.00, 10000.00, 0.00, 0.00, 'STOPPED')`
     );
     const fresh = await query<Record<string, unknown>>('SELECT * FROM tp_account WHERE id = 1;');
     return normalizeAccount(fresh[0]);
@@ -43,6 +43,7 @@ function normalizeAccount(r: Record<string, unknown>): Account {
     default_allocation_pct: num(r.default_allocation_pct) || 15,
     stop_loss_pct: num(r.stop_loss_pct) || 2,
     take_profit_pct: num(r.take_profit_pct) || 4,
+    confidence_threshold_pct: num(r.confidence_threshold_pct) || 90,
     leverage: num(r.leverage) || 1,
     risk_level: (r.risk_level as RiskLevel) ?? 'Balanced',
     theme: (r.theme as ThemeMode) ?? 'Dark',
@@ -180,6 +181,7 @@ export async function getSettings(): Promise<Settings> {
     default_allocation_pct: account.default_allocation_pct,
     stop_loss_pct: account.stop_loss_pct,
     take_profit_pct: account.take_profit_pct,
+    confidence_threshold_pct: account.confidence_threshold_pct,
     theme: account.theme,
     trade_alerts: account.trade_alerts,
     pnl_alerts: account.pnl_alerts,
@@ -206,6 +208,10 @@ export async function updateSettings(s: Partial<Settings>): Promise<Settings> {
   }
   if (s.stop_loss_pct !== undefined) push('stop_loss_pct', s.stop_loss_pct);
   if (s.take_profit_pct !== undefined) push('take_profit_pct', s.take_profit_pct);
+  if (s.confidence_threshold_pct !== undefined) {
+    const v = Math.min(95, Math.max(70, s.confidence_threshold_pct));
+    push('confidence_threshold_pct', v);
+  }
   if (s.theme !== undefined) push('theme', s.theme);
   if (s.trade_alerts !== undefined) push('trade_alerts', s.trade_alerts);
   if (s.pnl_alerts !== undefined) push('pnl_alerts', s.pnl_alerts);
