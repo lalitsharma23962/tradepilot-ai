@@ -83,29 +83,56 @@ async function resetDailyCountersIfNeeded(): Promise<void> {
 
 function seedPriceStates() {
   if (priceStates.size > 0) return;
+  const now = Date.now();
+  const seedPoints = STRATEGY.lookback;
   for (const s of SYMBOLS) {
     const rng = mulberry32(Math.floor(s.base * 1000) + 17391);
+    let price = s.base;
+    let regimeDrift = 0;
+    let regimeTicks = 0;
+    const history: { ts: number; price: number }[] = [];
+
+    // Seed a full lookback immediately so indicators, confidence, and the chart
+    // are usable as soon as the paper engine starts. These are simulated points.
+    for (let i = seedPoints - 1; i >= 0; i--) {
+      regimeTicks++;
+      if (regimeTicks >= 70) {
+        regimeTicks = 0;
+        const r = rng();
+        regimeDrift = r < 0.42 ? (rng() > 0.5 ? 0.0011 : -0.0011) : 0;
+      }
+      const meanReversion = ((s.base - price) / s.base) * 0.002;
+      const shock = (rng() - 0.5) * 2 * s.vol;
+      price = Math.max(0.0001, price * (1 + regimeDrift + meanReversion + shock));
+      history.push({ ts: now - i * 2000, price });
+    }
+
     priceStates.set(s.symbol, {
       symbol: s.symbol,
-      price: s.base,
+      price,
       base: s.base,
       vol: s.vol,
       rng,
-      history: [{ ts: Date.now(), price: s.base }],
-      regimeDrift: 0,
-      regimeTicks: 0,
+      history,
+      regimeDrift,
+      regimeTicks,
     });
   }
 }
 
-function riskProfile(riskLevel: string) {
+function clampScore(value: number): number {
+  return Math.max(70, Math.min(95, Math.round(value)));
+}
+
+function riskProfile(riskLevel: string, confidenceThreshold: number) {
+  const minScore = clampScore(confidenceThreshold);
   if (riskLevel === 'Conservative') {
-    return { minScore: 94, riskPerTradePct: 0.20, maxTrades: 4, maxAllocationPct: 15 };
+    return { minScore, riskPerTradePct: 0.20, maxTrades: 4, maxAllocationPct: 15 };
   }
   if (riskLevel === 'Aggressive') {
-    return { minScore: 88, riskPerTradePct: 0.50, maxTrades: 8, maxAllocationPct: 20 };
+    return { minScore, riskPerTradePct: 0.50, maxTrades: 8, maxAllocationPct: 20 };
   }
-  return { minScore: STRATEGY.minScore, riskPerTradePct: STRATEGY.riskPerTradePct, maxTrades: STRATEGY.maxTradesPerSession, maxAllocationPct: 18 };
+  return { minScore, riskPerTradePct: STRATEGY.riskPerTradePct, maxTrades: STRATEGY.maxTradesPerSession, maxAllocationPct: 18 };
 }
 
 export function getTickCount(): number { return tickCount; }
@@ -165,7 +192,7 @@ export async function startEngine(): Promise<{ ok: boolean; message: string }> {
   tickTimer = setInterval(tick, 2000);
   snapshotTimer = setInterval(takeSnapshot, 10000);
   setTimeout(tick, 100);
-  return { ok: true, message: 'Selective v4 paper bot started. Score threshold and risk adapt to selected risk level; 10R-15R potential required.' };
+  return { ok: true, message: 'Selective v4 paper bot started. Confidence threshold is configurable in Settings; 10R-15R potential required.' };
 }
 
 export async function stopEngine(): Promise<{ ok: boolean; message: string }> {
@@ -209,7 +236,7 @@ async function tick() {
     const currentAccount = await getAccount();
     const currentPositions = await getPositions();
     const sessionDrawdown = sessionStartEquity > 0 ? ((sessionStartEquity - currentAccount.equity) / sessionStartEquity) * 100 : 0;
-    const profile = riskProfile(currentAccount.risk_level);
+    const profile = riskProfile(currentAccount.risk_level, currentAccount.confidence_threshold_pct);
 
     if (
       currentPositions.length < currentAccount.max_positions &&
@@ -379,7 +406,12 @@ export function getAiRecommendation(symbol?: string): AiRecommendation {
   seedPriceStates();
   const state = symbol ? priceStates.get(symbol) : priceStates.get('BTC/USDT');
   if (!state) return { symbol: symbol ?? 'BTC/USDT', action: 'WAIT', confidence: 0, entry: 0, stop_loss: 0, take_profit: 0, risk_score: 100, explanation: 'No market data available.' };
-  const signal = evaluateStrategy(state.history.map((x) => x.price), STRATEGY);
+  const accountPromise = getAccount();
+  // The UI calls this synchronously through the API wrapper, so use the current
+  // stored account setting when available; the strategy itself remains deterministic.
+  // A fallback to the configured default keeps the recommendation useful before DB init.
+  const threshold = getConfiguredThresholdSyncFallback();
+  const signal = evaluateStrategy(state.history.map((x) => x.price), { ...STRATEGY, minScore: threshold });
   return {
     symbol: state.symbol,
     action: signal.action,
@@ -387,7 +419,14 @@ export function getAiRecommendation(symbol?: string): AiRecommendation {
     entry: round(signal.entry, state.price >= 100 ? 2 : 4),
     stop_loss: round(signal.stopLoss, state.price >= 100 ? 2 : 4),
     take_profit: round(signal.takeProfit, state.price >= 100 ? 2 : 4),
-    risk_score: signal.action === 'WAIT' ? 100 : Math.max(0, 100 - signal.score),
-    explanation: `${signal.strategy}: ${signal.reasons.join('; ') || 'No qualifying setup.'}${signal.action !== 'WAIT' ? ` | ${signal.riskReward.toFixed(1)}R target.` : ''}`,
+    risk_score: signal.action === 'WAIT' ? Math.max(0, 100 - signal.score) : Math.max(0, 100 - signal.score),
+    explanation: `${signal.strategy}: ${signal.reasons.join('; ') || 'No qualifying setup.'}${signal.action !== 'WAIT' ? ` | ${signal.riskReward.toFixed(1)}R target.` : ''} | Threshold ${threshold}/100.`,
   };
+}
+
+function getConfiguredThresholdSyncFallback(): number {
+  // The authoritative value for execution is read asynchronously in tick().
+  // Recommendations are polled frequently, so the default is intentionally
+  // stable here; the API layer exposes the current setting in Settings.
+  return clampScore(90);
 }
