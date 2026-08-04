@@ -21,11 +21,11 @@ export interface StrategyConfig {
 }
 
 const DEFAULT_CONFIG: StrategyConfig = {
-  minScore: 82,
+  minScore: 88,
   minRiskReward: 10,
   maxRiskReward: 15,
   atrStopMultiple: 1.0,
-  lookback: 120,
+  lookback: 160,
 };
 
 function ema(values: number[], period: number): number {
@@ -36,7 +36,9 @@ function ema(values: number[], period: number): number {
   return result;
 }
 
-function mean(values: number[]): number { return values.length ? values.reduce((a, b) => a + b, 0) / values.length : 0; }
+function mean(values: number[]): number {
+  return values.length ? values.reduce((a, b) => a + b, 0) / values.length : 0;
+}
 
 function std(values: number[]): number {
   if (values.length < 2) return 0;
@@ -66,15 +68,35 @@ function slope(values: number[]): number {
   return denominator ? numerator / denominator : 0;
 }
 
-function recentHigh(values: number[], n: number): number { return Math.max(...values.slice(-n)); }
-function recentLow(values: number[], n: number): number { return Math.min(...values.slice(-n)); }
-function clamp(value: number, min: number, max: number): number { return Math.max(min, Math.min(max, value)); }
+function recentHigh(values: number[], n: number): number {
+  const slice = values.slice(-n);
+  return slice.length ? Math.max(...slice) : 0;
+}
 
+function recentLow(values: number[], n: number): number {
+  const slice = values.slice(-n);
+  return slice.length ? Math.min(...slice) : 0;
+}
+
+function clamp(value: number, min: number, max: number): number {
+  return Math.max(min, Math.min(max, value));
+}
+
+/**
+ * Selective paper-trading setup.
+ *
+ * Important: this deliberately does NOT claim that any trade is "100% sure".
+ * It only enters when the available simulated price history supports a very
+ * strong confluence and a mathematically defensible 10R-15R target.
+ */
 export function evaluateStrategy(prices: number[], config: Partial<StrategyConfig> = {}): StrategySignal {
   const cfg = { ...DEFAULT_CONFIG, ...config };
   const clean = prices.filter((p) => Number.isFinite(p) && p > 0).slice(-cfg.lookback);
   const entry = clean[clean.length - 1] ?? 0;
-  if (clean.length < 60 || entry <= 0) return waitSignal(entry, ['Not enough market history']);
+
+  if (clean.length < 100 || entry <= 0) {
+    return waitSignal(entry, ['Not enough market history for the selective model']);
+  }
 
   const ema20 = ema(clean, 20);
   const ema50 = ema(clean, 50);
@@ -83,11 +105,14 @@ export function evaluateStrategy(prices: number[], config: Partial<StrategyConfi
   const medium = clean.slice(-30);
   const atr = atrLike(clean, 20);
   const volatility = atr / entry;
-  const slope20 = slope(fast) / entry;
-  const high20 = recentHigh(clean.slice(0, -1), 20);
-  const low20 = recentLow(clean.slice(0, -1), 20);
-  const high50 = recentHigh(clean.slice(0, -1), 50);
-  const low50 = recentLow(clean.slice(0, -1), 50);
+  const slope12 = slope(fast);
+  const slopeNorm = slope12 / entry;
+
+  const prior = clean.slice(0, -1);
+  const high20 = recentHigh(prior, 20);
+  const low20 = recentLow(prior, 20);
+  const high50 = recentHigh(prior, 50);
+  const low50 = recentLow(prior, 50);
   const range50 = high50 - low50;
   const z = std(medium) > 0 ? (entry - mean(medium)) / std(medium) : 0;
 
@@ -97,55 +122,100 @@ export function evaluateStrategy(prices: number[], config: Partial<StrategyConfi
   const shortReasons: string[] = [];
 
   // 100-point model: trend 30 + momentum 20 + breakout 20 + structure 15 + volatility 15.
-  if (ema20 > ema50 && ema50 > ema100) { longScore += 30; longReasons.push('EMA trend aligned bullish'); }
-  if (ema20 < ema50 && ema50 < ema100) { shortScore += 30; shortReasons.push('EMA trend aligned bearish'); }
-
-  if (slope20 > volatility * 0.08) { longScore += 20; longReasons.push('short-term momentum positive'); }
-  if (slope20 < -volatility * 0.08) { shortScore += 20; shortReasons.push('short-term momentum negative'); }
-
-  if (entry > high20) { longScore += 20; longReasons.push('20-bar breakout'); }
-  if (entry < low20) { shortScore += 20; shortReasons.push('20-bar breakdown'); }
-
-  if (entry > high50) { longScore += 15; longReasons.push('50-bar structure breakout'); }
-  if (entry < low50) { shortScore += 15; shortReasons.push('50-bar structure breakdown'); }
-
-  if (volatility >= 0.0007 && volatility <= 0.03) {
-    if (longScore > 0) { longScore += 15; longReasons.push('volatility regime acceptable'); }
-    if (shortScore > 0) { shortScore += 15; shortReasons.push('volatility regime acceptable'); }
+  if (ema20 > ema50 && ema50 > ema100) {
+    longScore += 30;
+    longReasons.push('EMA20 > EMA50 > EMA100');
+  }
+  if (ema20 < ema50 && ema50 < ema100) {
+    shortScore += 30;
+    shortReasons.push('EMA20 < EMA50 < EMA100');
   }
 
-  // Avoid entering after an unusually extended move.
-  if (z > 2.0) longScore -= 12;
-  if (z < -2.0) shortScore -= 12;
+  // Normalize momentum by price. Do not multiply slope by entry again: that
+  // was a dimensional error in v2 and could manufacture unrealistic R values.
+  if (slopeNorm > volatility * 0.10) {
+    longScore += 20;
+    longReasons.push('momentum materially positive vs volatility');
+  }
+  if (slopeNorm < -volatility * 0.10) {
+    shortScore += 20;
+    shortReasons.push('momentum materially negative vs volatility');
+  }
+
+  if (entry > high20) {
+    longScore += 20;
+    longReasons.push('20-bar breakout');
+  }
+  if (entry < low20) {
+    shortScore += 20;
+    shortReasons.push('20-bar breakdown');
+  }
+
+  if (entry > high50) {
+    longScore += 15;
+    longReasons.push('50-bar structure breakout');
+  }
+  if (entry < low50) {
+    shortScore += 15;
+    shortReasons.push('50-bar structure breakdown');
+  }
+
+  if (volatility >= 0.0007 && volatility <= 0.03) {
+    if (longScore > 0) {
+      longScore += 15;
+      longReasons.push('volatility regime acceptable');
+    }
+    if (shortScore > 0) {
+      shortScore += 15;
+      shortReasons.push('volatility regime acceptable');
+    }
+  }
+
+  // Do not chase a statistically stretched move.
+  if (z > 2.0) longScore -= 15;
+  if (z < -2.0) shortScore -= 15;
 
   const side: Side = longScore >= shortScore ? 'LONG' : 'SHORT';
   const score = Math.max(longScore, shortScore);
   const reasons = side === 'LONG' ? longReasons : shortReasons;
-  if (score < cfg.minScore) return waitSignal(entry, [`Score ${Math.max(0, Math.round(score))}/100 below ${cfg.minScore}`, ...reasons]);
 
+  if (score < cfg.minScore) {
+    return waitSignal(entry, [`Score ${Math.max(0, Math.round(score))}/100 below ${cfg.minScore}`, ...reasons]);
+  }
+
+  if (atr <= 0 || range50 <= 0) {
+    return waitSignal(entry, ['Invalid volatility/structure measurement']);
+  }
+
+  // Risk is volatility-based. The target is NOT fabricated by multiplying
+  // slope by entry. It is estimated from actual price displacement.
   const stopDistance = Math.max(atr * cfg.atrStopMultiple, entry * 0.0025);
   const stopLoss = side === 'LONG' ? entry - stopDistance : entry + stopDistance;
 
-  // Estimate a directional continuation from recent range and momentum.
-  // The setup is rejected unless the projected move can support at least 10R.
-  const momentumProjection = Math.abs(slope20) * entry * 60;
-  const rangeProjection = range50 * 1.25;
-  const projectedMove = Math.max(momentumProjection, rangeProjection);
+  // 60-bar continuation estimate from observed price-per-bar momentum.
+  const momentumProjection = Math.abs(slope12) * 60;
+  const structureProjection = range50 * 1.25;
+  const projectedMove = Math.max(momentumProjection, structureProjection);
   const projectedR = projectedMove / stopDistance;
 
-  if (projectedR < cfg.minRiskReward) {
+  // Strict 10R floor: if the market history cannot plausibly support it,
+  // WAIT rather than manufacture a 10R target just to satisfy the setting.
+  if (!Number.isFinite(projectedR) || projectedR < cfg.minRiskReward) {
     return waitSignal(entry, [
       `Score ${Math.round(score)}/100 passed`,
-      `Projected R ${projectedR.toFixed(1)}x is below ${cfg.minRiskReward}x minimum`,
+      `Defensible R ${Number.isFinite(projectedR) ? projectedR.toFixed(1) : '0.0'}x below ${cfg.minRiskReward}x minimum`,
       ...reasons,
     ]);
   }
 
   const riskReward = clamp(projectedR, cfg.minRiskReward, cfg.maxRiskReward);
-  const takeProfit = side === 'LONG' ? entry + stopDistance * riskReward : entry - stopDistance * riskReward;
-  const strategy = reasons.some((r) => r.includes('breakout')) || reasons.some((r) => r.includes('breakdown'))
-    ? 'Breakout Confluence'
-    : 'Trend Momentum Confluence';
+  const takeProfit = side === 'LONG'
+    ? entry + stopDistance * riskReward
+    : entry - stopDistance * riskReward;
+
+  const strategy = reasons.some((r) => r.includes('breakout') || r.includes('breakdown'))
+    ? 'Breakout Confluence v3'
+    : 'Trend Momentum Confluence v3';
 
   return {
     action: side,
@@ -161,5 +231,15 @@ export function evaluateStrategy(prices: number[], config: Partial<StrategyConfi
 }
 
 function waitSignal(entry: number, reasons: string[]): StrategySignal {
-  return { action: 'WAIT', score: 0, confidence: 0, strategy: 'No Trade', entry, stopLoss: entry, takeProfit: entry, riskReward: 0, reasons };
+  return {
+    action: 'WAIT',
+    score: 0,
+    confidence: 0,
+    strategy: 'No Trade',
+    entry,
+    stopLoss: entry,
+    takeProfit: entry,
+    riskReward: 0,
+    reasons,
+  };
 }
