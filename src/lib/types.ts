@@ -22,6 +22,7 @@ export interface Account {
   default_allocation_pct: number;
   stop_loss_pct: number;
   take_profit_pct: number;
+  confidence_threshold_pct: number;
   leverage: number;
   risk_level: RiskLevel;
   theme: ThemeMode;
@@ -112,6 +113,7 @@ export interface Settings {
   default_allocation_pct: number;
   stop_loss_pct: number;
   take_profit_pct: number;
+  confidence_threshold_pct: number;
   theme: ThemeMode;
   trade_alerts: boolean;
   pnl_alerts: boolean;
