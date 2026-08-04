@@ -38,7 +38,6 @@ export function AppProvider({ children }: { children: ReactNode }) {
     if (inFlight.current) return;
     inFlight.current = true;
     try {
-      // Independent requests — one failure does not break the others.
       const results = await Promise.allSettled([
         api.portfolio(),
         api.positions(),
@@ -66,16 +65,13 @@ export function AppProvider({ children }: { children: ReactNode }) {
 
       if (mounted.current) {
         setErrors(newErrors);
-
         if (failCount === 0) setConn('connected');
         else if (failCount < results.length) setConn('partial');
         else setConn('down');
 
         if (results[0].status === 'fulfilled' && results[0].value.ok && results[0].value.data) {
-          // portfolio returns a subset; fetch full account for settings fields
           const acct = await api.portfolio();
           if (acct.ok && acct.data) {
-            // Build a full account object from portfolio + settings.
             const s = results[6].status === 'fulfilled' && results[6].value.ok ? results[6].value.data : null;
             setAccount({
               id: 1,
@@ -91,6 +87,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
               default_allocation_pct: s?.default_allocation_pct ?? 15,
               stop_loss_pct: s?.stop_loss_pct ?? 2,
               take_profit_pct: s?.take_profit_pct ?? 4,
+              confidence_threshold_pct: s?.confidence_threshold_pct ?? 90,
               leverage: 1,
               risk_level: s?.risk_level ?? 'Balanced',
               theme: s?.theme ?? 'Dark',
