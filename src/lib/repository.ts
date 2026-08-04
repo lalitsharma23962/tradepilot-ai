@@ -209,7 +209,7 @@ export async function updateSettings(s: Partial<Settings>): Promise<Settings> {
   if (s.stop_loss_pct !== undefined) push('stop_loss_pct', s.stop_loss_pct);
   if (s.take_profit_pct !== undefined) push('take_profit_pct', s.take_profit_pct);
   if (s.confidence_threshold_pct !== undefined) {
-    const v = Math.min(95, Math.max(70, s.confidence_threshold_pct));
+    const v = Math.min(95, Math.max(60, s.confidence_threshold_pct));
     push('confidence_threshold_pct', v);
   }
   if (s.theme !== undefined) push('theme', s.theme);
