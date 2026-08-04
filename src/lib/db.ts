@@ -18,6 +18,7 @@ CREATE TABLE IF NOT EXISTS tp_account (
   default_allocation_pct numeric(5,2) NOT NULL DEFAULT 15.00,
   stop_loss_pct numeric(5,2) NOT NULL DEFAULT 2.00,
   take_profit_pct numeric(5,2) NOT NULL DEFAULT 4.00,
+  confidence_threshold_pct numeric(5,2) NOT NULL DEFAULT 90.00,
   leverage numeric(5,2) NOT NULL DEFAULT 1.00,
   risk_level text NOT NULL DEFAULT 'Balanced',
   theme text NOT NULL DEFAULT 'Dark',
@@ -83,10 +84,12 @@ export async function getDb(): Promise<PGlite> {
   if (initPromise) return initPromise;
 
   initPromise = (async () => {
-    // In the browser, persist to IndexedDB. In Node (tests), use in-memory.
     const location = typeof indexedDB !== 'undefined' ? 'idb://tradepilot' : undefined;
     const db = new PGlite(location);
     await db.exec(SCHEMA_SQL);
+    // Existing browser databases need a lightweight migration because CREATE TABLE
+    // does not alter an already-created tp_account table.
+    await db.exec(`ALTER TABLE tp_account ADD COLUMN IF NOT EXISTS confidence_threshold_pct numeric(5,2) NOT NULL DEFAULT 90.00;`);
     await db.exec(SEED_SQL);
     dbInstance = db;
     return db;
