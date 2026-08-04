@@ -100,6 +100,7 @@ export interface AiRecommendation {
   symbol: string;
   action: 'LONG' | 'SHORT' | 'WAIT';
   confidence: number;
+  threshold: number;
   entry: number;
   stop_loss: number;
   take_profit: number;

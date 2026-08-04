@@ -93,12 +93,12 @@ export function SettingsPage() {
       </Card>
 
       <Card>
-        <CardHeader title="Minimum Confidence / Score Threshold" subtitle="70–95. A trade is eligible only when the strategy score reaches this value. Lower = more signals; higher = more selective." />
+        <CardHeader title="Minimum Confidence / Score Threshold" subtitle="60–95. A trade is eligible only when the strategy score reaches this value. Lower = more signals; higher = more selective." />
         <CardBody className="space-y-3">
           <div className="flex items-center gap-4">
             <input
               type="range"
-              min={70}
+              min={60}
               max={95}
               step={1}
               value={settings.confidence_threshold_pct}
@@ -108,7 +108,7 @@ export function SettingsPage() {
             />
             <span className="w-16 text-right text-sm font-semibold text-sky-400">{settings.confidence_threshold_pct}%</span>
           </div>
-          <p className="text-xs text-slate-500">This is the actual entry score gate used by both the AI Recommendation panel and the paper trading engine.</p>
+          <p className="text-xs text-slate-500">This is the live entry score gate used by both the AI Recommendation panel and the paper trading engine. It applies on the next engine tick; no restart is required.</p>
         </CardBody>
       </Card>
 

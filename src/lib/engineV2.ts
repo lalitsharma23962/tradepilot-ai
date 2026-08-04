@@ -47,7 +47,7 @@ interface PriceState {
 function mulberry32(seed: number) {
   return function () {
     seed |= 0;
-    seed = (seed + 0x6d2b79f6) | 0;
+    seed = (seed + 0x6d2b79f5) | 0;
     let t = Math.imul(seed ^ (seed >>> 15), 1 | seed);
     t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t;
     return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
@@ -121,7 +121,7 @@ function seedPriceStates() {
 }
 
 function clampScore(value: number): number {
-  return Math.max(70, Math.min(95, Math.round(value)));
+  return Math.max(60, Math.min(95, Math.round(value)));
 }
 
 function riskProfile(riskLevel: string, confidenceThreshold: number) {
@@ -405,7 +405,7 @@ export async function resetAccount(): Promise<{ ok: boolean; message: string }> 
 export async function getAiRecommendation(symbol?: string): Promise<AiRecommendation> {
   seedPriceStates();
   const state = symbol ? priceStates.get(symbol) : priceStates.get('BTC/USDT');
-  if (!state) return { symbol: symbol ?? 'BTC/USDT', action: 'WAIT', confidence: 0, entry: 0, stop_loss: 0, take_profit: 0, risk_score: 100, explanation: 'No market data available.' };
+  if (!state) return { symbol: symbol ?? 'BTC/USDT', action: 'WAIT', confidence: 0, threshold: 90, entry: 0, stop_loss: 0, take_profit: 0, risk_score: 100, explanation: 'No market data available.' };
 
   const account = await getAccount();
   const threshold = clampScore(account.confidence_threshold_pct);
@@ -414,6 +414,7 @@ export async function getAiRecommendation(symbol?: string): Promise<AiRecommenda
     symbol: state.symbol,
     action: signal.action,
     confidence: signal.confidence,
+    threshold,
     entry: round(signal.entry, state.price >= 100 ? 2 : 4),
     stop_loss: round(signal.stopLoss, state.price >= 100 ? 2 : 4),
     take_profit: round(signal.takeProfit, state.price >= 100 ? 2 : 4),
