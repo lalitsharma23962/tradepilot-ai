@@ -3,7 +3,7 @@ import { Area, AreaChart, CartesianGrid, ResponsiveContainer, Tooltip, XAxis, YA
 import { Brain, Zap, Shield, Target, TrendingUp, TrendingDown } from 'lucide-react';
 import { useApp } from '@/lib/store';
 import * as api from '@/lib/api';
-import { getPriceHistory } from '@/lib/engine';
+import { getPriceHistory } from '@/lib/engineV2';
 import { Badge, Button, Card, CardBody, CardHeader, EmptyState, LoadingState, Table } from '@/components/ui';
 import { fmtMoney, fmtNum, fmtPct, pnlClass } from '@/lib/format';
 import type { AiRecommendation } from '@/lib/types';
@@ -105,8 +105,8 @@ export function TradingPage() {
                 </div>
 
                 <div className="grid grid-cols-2 gap-3 text-xs">
-                  <InfoRow icon={<Zap className="h-3.5 w-3.5" />} label="Confidence" value={`${fmtNum(rec.confidence * 100, 0)}%`} />
-                  <InfoRow icon={<Shield className="h-3.5 w-3.5" />} label="Risk Score" value={`${rec.risk_score}/10`} />
+                  <InfoRow icon={<Zap className="h-3.5 w-3.5" />} label="Confidence" value={`${fmtNum(rec.confidence, 0)}%`} />
+                  <InfoRow icon={<Shield className="h-3.5 w-3.5" />} label="Risk Score" value={`${rec.risk_score}/100`} />
                   <InfoRow label="Suggested Entry" value={fmtMoney(rec.entry, rec.entry >= 100 ? 2 : 4)} />
                   <InfoRow label="Stop Loss" value={fmtMoney(rec.stop_loss, rec.stop_loss >= 100 ? 2 : 4)} tone="negative" />
                   <InfoRow label="Take Profit" value={fmtMoney(rec.take_profit, rec.take_profit >= 100 ? 2 : 4)} tone="positive" />
@@ -189,8 +189,8 @@ function SimPriceChart({ symbol }: { symbol: string }) {
 
   useEffect(() => {
     let mounted = true;
-    const load = async () => {
-      const hist = getPriceHistory(symbol, 60);
+    const load = () => {
+      const hist = getPriceHistory(symbol, 180);
       if (mounted) setData(hist);
     };
     load();
