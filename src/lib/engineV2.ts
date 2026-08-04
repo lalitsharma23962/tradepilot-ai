@@ -16,14 +16,14 @@ const SYMBOLS = [
 ];
 
 const STRATEGY = {
-  minScore: 82,
+  minScore: 88,
   minRiskReward: 10,
   maxRiskReward: 15,
   atrStopMultiple: 1.0,
-  lookback: 120,
-  maxTradesPerSession: 5,
+  lookback: 160,
+  maxTradesPerSession: 8,
   maxConsecutiveLosses: 2,
-  cooldownTicks: 8,
+  cooldownTicks: 12,
 };
 
 interface PriceState {
@@ -56,6 +56,20 @@ let ticking = false;
 let sessionTrades = 0;
 let consecutiveLosses = 0;
 let lastEntryTick = -Infinity;
+let tradeDayKey = '';
+
+function currentDayKey(): string {
+  return new Date().toISOString().slice(0, 10);
+}
+
+function resetDailyCountersIfNeeded(): void {
+  const key = currentDayKey();
+  if (tradeDayKey !== key) {
+    tradeDayKey = key;
+    sessionTrades = 0;
+    consecutiveLosses = 0;
+  }
+}
 
 function seedPriceStates() {
   if (priceStates.size > 0) return;
@@ -89,7 +103,7 @@ export function getMarketTicks(): MarketTick[] {
   });
 }
 
-export function getPriceHistory(symbol: string, points = 120): { ts: number; price: number }[] {
+export function getPriceHistory(symbol: string, points = 160): { ts: number; price: number }[] {
   seedPriceStates();
   const s = priceStates.get(symbol);
   return s ? s.history.slice(-points) : [];
@@ -123,15 +137,14 @@ export async function startEngine(): Promise<{ ok: boolean; message: string }> {
   const account = await getAccount();
   if (account.bot_status === 'RUNNING') return { ok: false, message: 'Bot is already RUNNING. Duplicate start rejected.' };
   seedPriceStates();
+  resetDailyCountersIfNeeded();
   engineRunning = true;
-  sessionTrades = 0;
-  consecutiveLosses = 0;
   lastEntryTick = -Infinity;
   await execute(`UPDATE tp_account SET bot_status = 'RUNNING', started_at = now(), last_tick_at = now() WHERE id = 1;`);
   tickTimer = setInterval(tick, 2000);
   snapshotTimer = setInterval(takeSnapshot, 10000);
   setTimeout(tick, 100);
-  return { ok: true, message: 'Selective paper bot started. Score >= 82 and minimum 10R potential required.' };
+  return { ok: true, message: 'Selective paper bot started. Score >= 88 and minimum 10R potential required.' };
 }
 
 export async function stopEngine(): Promise<{ ok: boolean; message: string }> {
@@ -154,6 +167,7 @@ async function tick() {
   if (!engineRunning || ticking) return;
   ticking = true;
   try {
+    resetDailyCountersIfNeeded();
     advancePrices();
     const account = await getAccount();
     const positions = await getPositions();
@@ -171,13 +185,18 @@ async function tick() {
 
     await recomputeEquity();
     const currentPositions = await getPositions();
-    if (currentPositions.length < account.max_positions && sessionTrades < STRATEGY.maxTradesPerSession && consecutiveLosses < STRATEGY.maxConsecutiveLosses && tickCount - lastEntryTick >= STRATEGY.cooldownTicks) {
+    if (
+      currentPositions.length < account.max_positions &&
+      sessionTrades < STRATEGY.maxTradesPerSession &&
+      consecutiveLosses < STRATEGY.maxConsecutiveLosses &&
+      tickCount - lastEntryTick >= STRATEGY.cooldownTicks
+    ) {
       await tryOpenPosition();
     }
     await recomputeEquity();
     await execute(`UPDATE tp_account SET last_tick_at = now() WHERE id = 1;`);
   } catch (err) {
-    console.error('[engine-v2] tick error:', err);
+    console.error('[engine-v3] tick error:', err);
   } finally {
     ticking = false;
   }
@@ -210,7 +229,13 @@ async function tryOpenPosition(): Promise<void> {
   for (const state of candidates) {
     const signal = evaluateStrategy(state.history.map((x) => x.price), STRATEGY);
     if (signal.action === 'WAIT') continue;
-    if (!best || signal.score > best.signal.score || signal.riskReward > best.signal.riskReward) best = { state, signal };
+    if (
+      !best ||
+      signal.score > best.signal.score ||
+      (signal.score === best.signal.score && signal.riskReward > best.signal.riskReward)
+    ) {
+      best = { state, signal };
+    }
   }
   if (!best) return;
 
@@ -273,7 +298,7 @@ async function takeSnapshot() {
     const unrealized = positions.reduce((a, p) => a + p.unrealized_pnl, 0);
     await execute(`INSERT INTO tp_snapshots (equity, cash, open_value, unrealized_pnl, realized_pnl, ts) VALUES ($1, $2, $3, $4, $5, now());`, [account.equity, account.cash, openValue, unrealized, account.realized_pnl]);
   } catch (err) {
-    console.error('[engine-v2] snapshot error:', err);
+    console.error('[engine-v3] snapshot error:', err);
   }
 }
 
@@ -291,6 +316,7 @@ export async function resetAccount(): Promise<{ ok: boolean; message: string }> 
   sessionTrades = 0;
   consecutiveLosses = 0;
   lastEntryTick = -Infinity;
+  tradeDayKey = currentDayKey();
   return { ok: true, message: 'Account reset to $10,000.' };
 }
 
