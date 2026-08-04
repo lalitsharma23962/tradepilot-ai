@@ -106,6 +106,7 @@ export function TradingPage() {
 
                 <div className="grid grid-cols-2 gap-3 text-xs">
                   <InfoRow icon={<Zap className="h-3.5 w-3.5" />} label="Confidence" value={`${fmtNum(rec.confidence, 0)}%`} />
+                  <InfoRow label="Threshold" value={`${fmtNum(rec.threshold, 0)}%`} />
                   <InfoRow icon={<Shield className="h-3.5 w-3.5" />} label="Risk Score" value={`${rec.risk_score}/100`} />
                   <InfoRow label="Suggested Entry" value={fmtMoney(rec.entry, rec.entry >= 100 ? 2 : 4)} />
                   <InfoRow label="Stop Loss" value={fmtMoney(rec.stop_loss, rec.stop_loss >= 100 ? 2 : 4)} tone="negative" />
