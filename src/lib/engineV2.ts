@@ -25,7 +25,6 @@ const STRATEGY = {
   maxTradesPerSession: 6,
   maxConsecutiveLosses: 2,
   cooldownTicks: 18,
-  // Risk controls are expressed as equity percentages, not position size.
   riskPerTradePct: 0.35,
   maxSessionLossPct: 2.0,
   maxAllocationPct: 20,
@@ -99,6 +98,16 @@ function seedPriceStates() {
   }
 }
 
+function riskProfile(riskLevel: string) {
+  if (riskLevel === 'Conservative') {
+    return { minScore: 94, riskPerTradePct: 0.20, maxTrades: 4, maxAllocationPct: 15 };
+  }
+  if (riskLevel === 'Aggressive') {
+    return { minScore: 88, riskPerTradePct: 0.50, maxTrades: 8, maxAllocationPct: 20 };
+  }
+  return { minScore: STRATEGY.minScore, riskPerTradePct: STRATEGY.riskPerTradePct, maxTrades: STRATEGY.maxTradesPerSession, maxAllocationPct: 18 };
+}
+
 export function getTickCount(): number { return tickCount; }
 
 export function getMarketTicks(): MarketTick[] {
@@ -127,8 +136,6 @@ function advancePrices() {
     if (s.regimeTicks >= 70) {
       s.regimeTicks = 0;
       const r = s.rng();
-      // Persistent regimes make the synthetic feed capable of producing
-      // meaningful continuation trades instead of pure white-noise entries.
       s.regimeDrift = r < 0.42 ? (s.rng() > 0.5 ? 0.0011 : -0.0011) : 0;
     }
     const meanReversion = ((s.base - s.price) / s.base) * 0.002;
@@ -158,7 +165,7 @@ export async function startEngine(): Promise<{ ok: boolean; message: string }> {
   tickTimer = setInterval(tick, 2000);
   snapshotTimer = setInterval(takeSnapshot, 10000);
   setTimeout(tick, 100);
-  return { ok: true, message: 'Selective v4 paper bot started. Score >= 90 and defensible 10R-15R potential required.' };
+  return { ok: true, message: 'Selective v4 paper bot started. Score threshold and risk adapt to selected risk level; 10R-15R potential required.' };
 }
 
 export async function stopEngine(): Promise<{ ok: boolean; message: string }> {
@@ -192,8 +199,6 @@ async function tick() {
       const newPrice = round(ps.price, pos.entry_price >= 100 ? 2 : 4);
       const pnl = calcUnrealizedPnl(pos, newPrice);
       await execute(`UPDATE tp_positions SET current_price = $1, unrealized_pnl = $2 WHERE id = $3;`, [newPrice, pnl, pos.id]);
-
-      // Protect profitable runners while leaving the 10R-15R target intact.
       await manageRunner(pos, newPrice);
       const slHit = pos.side === 'LONG' ? newPrice <= pos.stop_loss : newPrice >= pos.stop_loss;
       const tpHit = pos.side === 'LONG' ? newPrice >= pos.take_profit : newPrice <= pos.take_profit;
@@ -204,18 +209,16 @@ async function tick() {
     const currentAccount = await getAccount();
     const currentPositions = await getPositions();
     const sessionDrawdown = sessionStartEquity > 0 ? ((sessionStartEquity - currentAccount.equity) / sessionStartEquity) * 100 : 0;
+    const profile = riskProfile(currentAccount.risk_level);
 
-    // Once the daily loss budget is hit, manage existing positions but do not
-    // open another one. This prevents the old v2 behaviour of trading through
-    // a bad regime until the account is deeply underwater.
     if (
       currentPositions.length < currentAccount.max_positions &&
-      sessionTrades < STRATEGY.maxTradesPerSession &&
+      sessionTrades < profile.maxTrades &&
       consecutiveLosses < STRATEGY.maxConsecutiveLosses &&
       sessionDrawdown < STRATEGY.maxSessionLossPct &&
       tickCount - lastEntryTick >= STRATEGY.cooldownTicks
     ) {
-      await tryOpenPosition();
+      await tryOpenPosition(profile);
     }
     await recomputeEquity();
     await execute(`UPDATE tp_account SET last_tick_at = now() WHERE id = 1;`);
@@ -263,7 +266,7 @@ async function recomputeEquity() {
   await execute(`UPDATE tp_account SET equity = $1, total_pnl = $2 WHERE id = 1;`, [equity, totalPnl]);
 }
 
-async function tryOpenPosition(): Promise<void> {
+async function tryOpenPosition(profile: ReturnType<typeof riskProfile>): Promise<void> {
   const account = await getAccount();
   const positions = await getPositions();
   if (positions.length >= account.max_positions) return;
@@ -273,7 +276,11 @@ async function tryOpenPosition(): Promise<void> {
 
   let best: { state: PriceState; signal: StrategySignal } | null = null;
   for (const state of candidates) {
-    const signal = evaluateStrategy(state.history.map((x) => x.price), STRATEGY);
+    const signal = evaluateStrategy(state.history.map((x) => x.price), {
+      ...STRATEGY,
+      minScore: profile.minScore,
+      riskPerTradePct: undefined,
+    });
     if (signal.action === 'WAIT') continue;
     if (!best || signal.score > best.signal.score || (signal.score === best.signal.score && signal.riskReward > best.signal.riskReward)) {
       best = { state, signal };
@@ -288,11 +295,9 @@ async function tryOpenPosition(): Promise<void> {
   const riskPerUnit = Math.abs(price - stopLoss);
   if (riskPerUnit <= 0 || signal.riskReward < STRATEGY.minRiskReward) return;
 
-  // Size from risk first, then cap notional. This makes the 10R/15R objective
-  // meaningful: a stop hit cannot consume a large fraction of the account.
-  const riskBudget = account.equity * (STRATEGY.riskPerTradePct / 100);
+  const riskBudget = account.equity * (profile.riskPerTradePct / 100);
   const riskSizedNotional = riskBudget * price / riskPerUnit;
-  const allocationCap = Math.min(account.max_allocation_pct, STRATEGY.maxAllocationPct) / 100;
+  const allocationCap = Math.min(account.max_allocation_pct, profile.maxAllocationPct) / 100;
   const targetNotional = round(Math.min(riskSizedNotional, account.equity * allocationCap), 2);
   if (targetNotional > account.cash || targetNotional < 1) return;
 
