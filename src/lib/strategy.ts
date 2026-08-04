@@ -18,6 +18,7 @@ export interface StrategyConfig {
   maxRiskReward: number;
   atrStopMultiple: number;
   lookback: number;
+  riskPerTradePct?: number;
 }
 
 const DEFAULT_CONFIG: StrategyConfig = {
@@ -88,14 +89,6 @@ function clamp(value: number, min: number, max: number): number {
  * This is intentionally a filter, not a prediction oracle. There is no
  * mathematically valid "100% sure" market trade. A 10R-15R target is only
  * accepted when the observed series itself provides enough projected room.
- *
- * Entry logic is deliberately harder than v3:
- *  - multi-time-horizon trend alignment
- *  - momentum confirmation
- *  - breakout OR controlled pullback/reclaim
- *  - volatility regime filter
- *  - no entry when the move is already statistically stretched
- *  - strict defensible 10R-15R target check
  */
 export function evaluateStrategy(prices: number[], config: Partial<StrategyConfig> = {}): StrategySignal {
   const cfg = { ...DEFAULT_CONFIG, ...config };
@@ -130,8 +123,6 @@ export function evaluateStrategy(prices: number[], config: Partial<StrategyConfi
   const low50 = recentLow(prior, 50);
   const range50 = high50 - low50;
 
-  // A low fast/slow ATR ratio indicates compression; expansion after
-  // compression is more useful than blindly buying every new high.
   const compressionRatio = atr > 0 ? atrFast / atr : 1;
   const compressed = compressionRatio < 0.85;
 
@@ -204,7 +195,6 @@ export function evaluateStrategy(prices: number[], config: Partial<StrategyConfi
     shortReasons.push('breakdown followed volatility compression');
   }
 
-  // Penalize entries that are already too far from the short-term mean.
   if (z > 1.8) longScore -= 18;
   if (z < -1.8) shortScore -= 18;
 
@@ -223,13 +213,9 @@ export function evaluateStrategy(prices: number[], config: Partial<StrategyConfi
     return waitSignal(entry, ['Invalid volatility/structure measurement']);
   }
 
-  // Stop is based on current volatility, with a minimum distance to avoid
-  // microscopic stops in the synthetic feed.
   const stopDistance = Math.max(atr * cfg.atrStopMultiple, entry * 0.0018);
   const stopLoss = side === 'LONG' ? entry - stopDistance : entry + stopDistance;
 
-  // Project only from observed price displacement. We deliberately refuse to
-  // invent a 10R target if the series does not contain enough room.
   const momentumProjection = Math.abs(slope12) * 72;
   const structureProjection = range50 * 1.15;
   const continuationProjection = Math.abs(ema10 - ema50) * 2.5;
