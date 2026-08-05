@@ -56,7 +56,7 @@ function production(prices:number[],cfg:StrategyConfig):StrategySignal{
  } else if(shortSetup&&shortScore>=cfg.minScore){
   side='SHORT';score=shortScore;reasons=['bearish EMA regime','trend-strength filter',momentumShort?'meaningful multi-horizon momentum':pullShort?'EMA20 pullback/reclaim':'confirmed range breakdown','RSI confirmation','cost-aware volatility','price not excessively extended'];
  } else return wait(entry,['Production setup below quality threshold'],Math.max(longScore,shortScore));
- const dist=Math.max(a*cfg.atrStopMultiple,entry*.0015),riskReward=clamp(2.0,cfg.minRiskReward,cfg.maxRiskReward),stopLoss=side==='LONG'?entry-dist:entry+dist,takeProfit=side==='LONG'?entry+dist*riskReward:entry-dist*riskReward;
+ const dist=Math.max(a*Math.max(1.5,cfg.atrStopMultiple),entry*.0015),riskReward=clamp(2.0,Math.max(1.8,cfg.minRiskReward),Math.min(2.2,Math.max(2.0,cfg.maxRiskReward))),stopLoss=side==='LONG'?entry-dist:entry+dist,takeProfit=side==='LONG'?entry+dist*riskReward:entry-dist*riskReward;
  return{action:side,score:Math.round(clamp(score,0,100)),confidence:Math.round(clamp(score,0,100)),strategy:'Production Breakout v11',entry,stopLoss,takeProfit,riskReward,reasons};
 }
 
