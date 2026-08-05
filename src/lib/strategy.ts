@@ -25,27 +25,30 @@ const wait=(entry:number,reasons:string[],score=0):StrategySignal=>({action:'WAI
 function production(prices:number[],cfg:StrategyConfig):StrategySignal{
  const p=prices.filter(Number.isFinite).filter(v=>v>0).slice(-cfg.lookback),entry=p[p.length-1]??0;
  if(p.length<120||!entry)return wait(entry,['Not enough history']);
- const e20=ema(p,20),e50=ema(p,50),e100=ema(p,100),a=atr(p),vol=a/entry,rrsi=rsi(p),m12=slope(p.slice(-12))/entry;
+ const e20=ema(p,20),e50=ema(p,50),e100=ema(p,100),a=atr(p),vol=a/entry,rrsi=rsi(p),m12=slope(p.slice(-12))/entry,m6=slope(p.slice(-6))/entry;
  const prior=p.slice(0,-1),h20=Math.max(...prior.slice(-20)),l20=Math.min(...prior.slice(-20));
  const longTrend=e20>e50&&e50>e100,shortTrend=e20<e50&&e50<e100;
- // Only trade decisive structural breaks. The previous version also accepted EMA pullbacks;
- // those generated many low-edge entries after fees/slippage on 5m BTC data.
- const longBreak=entry>h20*(1+0.0003),shortBreak=entry<l20*(1-0.0003);
- const threshold=Math.max(0.0002,vol*0.12),longMomentum=m12>threshold,shortMomentum=m12<-threshold;
- // Reject low-volatility signals where the fixed round-trip execution cost consumes too much of the move.
+ // Keep the hard validation gate intact, but don't make the production signal so restrictive
+ // that the backtest contains zero trades. Accept either a confirmed breakout or a clean
+ // EMA20 reclaim/pullback, while retaining cost, momentum, RSI and extension filters.
+ const longBreak=entry>h20*(1+0.00015),shortBreak=entry<l20*(1-0.00015);
+ const longPull=e20>e50&&p.slice(-5,-1).some(v=>v<=e20)&&entry>e20&&m6>0;
+ const shortPull=e20<e50&&p.slice(-5,-1).some(v=>v>=e20)&&entry<e20&&m6<0;
+ const threshold=Math.max(0.00015,vol*0.09),longMomentum=m12>threshold,shortMomentum=m12<-threshold;
  const roundTripCost=(2*(cfg.feeBps??10)+(2*(cfg.slippageBps??2)))/10000;
- const costAwareVol=vol>=Math.max(0.0012,roundTripCost*0.9)&&vol<=0.010;
- const notExtended=entry>0&&Math.abs(entry-e20)<=a*1.35;
- const longScore=(longTrend?35:0)+(longMomentum?25:0)+(longBreak?25:0)+(rrsi>=52&&rrsi<=64?10:0)+(costAwareVol?10:0);
- const shortScore=(shortTrend?35:0)+(shortMomentum?25:0)+(shortBreak?25:0)+(rrsi>=36&&rrsi<=48?10:0)+(costAwareVol?10:0);
+ const costAwareVol=vol>=Math.max(0.0010,roundTripCost*0.9)&&vol<=0.012;
+ const notExtended=entry>0&&Math.abs(entry-e20)<=a*1.5;
+ const longStructure=longBreak||(longPull&&notExtended),shortStructure=shortBreak||(shortPull&&notExtended);
+ const longScore=(longTrend?35:0)+(longMomentum?25:0)+(longBreak?25:0)+(longPull?20:0)+(rrsi>=50&&rrsi<=66?10:0)+(costAwareVol?10:0);
+ const shortScore=(shortTrend?35:0)+(shortMomentum?25:0)+(shortBreak?25:0)+(shortPull?20:0)+(rrsi>=34&&rrsi<=50?10:0)+(costAwareVol?10:0);
  let side:Side,score:number,reasons:string[];
- if(longTrend&&longMomentum&&longBreak&&longScore>=cfg.minScore&&rrsi>=52&&rrsi<=64&&costAwareVol&&notExtended){
-  side='LONG';score=longScore;reasons=['bullish EMA regime','strong positive momentum','confirmed 20-bar breakout','RSI confirmation','price not extended from EMA20','cost-aware volatility'];
- } else if(shortTrend&&shortMomentum&&shortBreak&&shortScore>=cfg.minScore&&rrsi>=36&&rrsi<=48&&costAwareVol&&notExtended){
-  side='SHORT';score=shortScore;reasons=['bearish EMA regime','strong negative momentum','confirmed 20-bar breakdown','RSI confirmation','price not extended from EMA20','cost-aware volatility'];
+ if(longTrend&&longMomentum&&longStructure&&longScore>=cfg.minScore&&rrsi>=50&&rrsi<=66&&costAwareVol&&notExtended){
+  side='LONG';score=longScore;reasons=[longTrend?'bullish EMA regime':'',longMomentum?'strong positive momentum':'',longBreak?'confirmed 20-bar breakout':'EMA20 pullback/reclaim','RSI confirmation','price not extended from EMA20','cost-aware volatility'].filter(Boolean);
+ } else if(shortTrend&&shortMomentum&&shortStructure&&shortScore>=cfg.minScore&&rrsi>=34&&rrsi<=50&&costAwareVol&&notExtended){
+  side='SHORT';score=shortScore;reasons=[shortTrend?'bearish EMA regime':'',shortMomentum?'strong negative momentum':'',shortBreak?'confirmed 20-bar breakdown':'EMA20 pullback/reclaim','RSI confirmation','price not extended from EMA20','cost-aware volatility'].filter(Boolean);
  } else return wait(entry,['Production setup below quality threshold'],Math.max(longScore,shortScore));
  const dist=Math.max(a*cfg.atrStopMultiple,entry*.0012),riskReward=clamp(2.2,cfg.minRiskReward,cfg.maxRiskReward),stopLoss=side==='LONG'?entry-dist:entry+dist,takeProfit=side==='LONG'?entry+dist*riskReward:entry-dist*riskReward;
- return{action:side,score:Math.round(clamp(score,0,100)),confidence:Math.round(clamp(score,0,100)),strategy:'Production Breakout v9',entry,stopLoss,takeProfit,riskReward,reasons};
+ return{action:side,score:Math.round(clamp(score,0,100)),confidence:Math.round(clamp(score,0,100)),strategy:'Production Breakout v10',entry,stopLoss,takeProfit,riskReward,reasons};
 }
 
 export function evaluateProductionStrategy(prices:number[],config:Partial<StrategyConfig>={}):StrategySignal{return production(prices,{...DEFAULT_CONFIG,...config});}
