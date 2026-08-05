@@ -26,13 +26,21 @@ const rsi=(x:number[],p=14)=>{const s=x.slice(-(p+1)),d=s.slice(1).map((v,i)=>v-
 const slope=(x:number[])=>{if(x.length<2)return 0;const n=x.length,xm=(n-1)/2,ym=mean(x);let a=0,b=0;for(let i=0;i<n;i++){a+=(i-xm)*(x[i]-ym);b+=(i-xm)**2;}return b?a/b:0;};
 const z=(x:number[],n=40)=>{const s=x.slice(-n),m=mean(s),d=std(s);return d?(s[s.length-1]-m)/d:0;};
 
-function signal(id:string,c:Candle[]):1|-1|0{
- if(c.length<150)return 0;const p=c.map(x=>x.close),last=p[p.length-1],a=atr(c),v=a/last,e9=ema(p,9),e20=ema(p,20),e50=ema(p,50),e100=ema(p,100),r=rsi(p),prior=p.slice(0,-1);
+function signal(id:string,c:Candle[],cfg:BacktestConfig):1|-1|0{
+ if(c.length<150)return 0;
+ // Critical parity fix: the production validator now calls the exact same
+ // close-only production strategy used by the live/paper engine. Previously
+ // backtestV3 had a separate hand-written production branch, so a strategy
+ // could pass validation under rules that differed from live execution.
+ if(id==='production'){
+  const s=evaluateProductionStrategy(c.map(x=>x.close),{minScore:70,lookback:240,feeBps:cfg.feeBps,slippageBps:cfg.slippageBps});
+  return s.action==='LONG'?1:s.action==='SHORT'?-1:0;
+ }
+ const p=c.map(x=>x.close),last=p[p.length-1],a=atr(c),v=a/last,e9=ema(p,9),e20=ema(p,20),e50=ema(p,50),e100=ema(p,100),r=rsi(p),prior=p.slice(0,-1);
  const up=e20>e50&&e50>e100,down=e20<e50&&e50<e100,s12=slope(p.slice(-12))/last,s36=slope(p.slice(-36))/last,m21=last/p[Math.max(0,p.length-22)]-1,m72=last/p[Math.max(0,p.length-73)]-1;
  const h20=hi(prior,20),l20=lo(prior,20),h30=hi(prior,30),l30=lo(prior,30),h40=hi(prior,40),l40=lo(prior,40),h55=hi(prior,55),l55=lo(prior,55);
- const mid=mean(p.slice(-20)),sd=std(p.slice(-20)),upper=mid+2*sd,lower=mid-2*sd,macd=ema(p,12)-ema(p,26),macdPrev=ema(p.slice(0,-1),12)-ema(p.slice(0,-1),26),af=atr(c,10),as=atr(c,40),contract=af>0&&as>0&&af/as<.72,costAware=v>=Math.max(.00045,.00066*.55)&&v<=.03;
+ const mid=mean(p.slice(-20)),sd=std(p.slice(-20)),upper=mid+2*sd,lower=mid-2*sd,macd=ema(p,12)-ema(p,26),macdPrev=ema(p.slice(0,-1),12)-ema(p.slice(0,-1),26),af=atr(c,10),as=atr(c,40),contract=af>0&&as>0&&af/as<.72,costAware=v>=Math.max(.00045,((2*cfg.feeBps+2*cfg.slippageBps)/10000)*.55)&&v<=.03;
  switch(id){
-  case'production':return up&&s12>0&&s36>0&&(last>h20||last>e20)&&r>=48&&r<=72&&costAware&&last<=e20+a*2.5?1:down&&s12<0&&s36<0&&(last<l20||last<e20)&&r>=28&&r<=52&&costAware&&last>=e20-a*2.5?-1:0;
   case'ema-trend':return up&&last>e9&&s36>0?1:down&&last<e9&&s36<0?-1:0;
   case'breakout-20':return last>h20&&v>.0015?1:last<l20&&v>.0015?-1:0;
   case'breakout-55':return last>h55&&v>.0018?1:last<l55&&v>.0018?-1:0;
@@ -62,7 +70,7 @@ function closePnl(raw:number,p:{side:1|-1;entry:number;qty:number},fee:number,sl
 function simulate(c:Candle[],id:string,cfg:BacktestConfig,start:number,end:number):StrategyResult{
  let equity=cfg.initialCapital,peak=equity,maxDd=0;const pnls:number[]=[],tr:number[]=[];let open:{side:1|-1;entry:number;stop:number;target:number;qty:number;bars:number}|null=null;const fee=cfg.feeBps/10000,slip=cfg.slippageBps/10000;
  for(let i=Math.max(150,start);i<end;i++){const bar=c[i];let closed=false;if(open){open.bars++;const stop=open.side===1?bar.low<=open.stop:bar.high>=open.stop,tp=open.side===1?bar.high>=open.target:bar.low<=open.target;if(stop||tp||open.bars>=cfg.maxBarsInTrade){const raw=stop?open.stop:tp?open.target:bar.close,pnl=closePnl(raw,open,fee,slip);tr.push(equity?100*pnl/equity:0);pnls.push(pnl);equity+=pnl;open=null;closed=true;}}
-  if(!open&&!closed){const w=c.slice(Math.max(0,i-LOOKBACK),i),side=signal(id,w);if(side){const entry=bar.open*(1+side*slip),risk=Math.max(atr(w)*cfg.stopAtr,entry*.0015),rr=id==='production'?1.8:cfg.rewardRisk,stop=entry-side*risk,target=entry+side*risk*rr,riskBudget=Math.max(0,equity)*cfg.riskPerTradePct/100,riskQty=riskBudget/risk,maxNotional=Math.max(0,equity)*cfg.maxPositionPct/100*Math.max(1,cfg.leverage),qty=Math.min(riskQty,maxNotional/entry);if(qty>0)open={side,entry,stop,target,qty,bars:0};}}
+  if(!open&&!closed){const w=c.slice(Math.max(0,i-LOOKBACK),i),side=signal(id,w,cfg);if(side){const entry=bar.open*(1+side*slip),risk=Math.max(atr(w)*cfg.stopAtr,entry*.0015),rr=id==='production'?1.8:cfg.rewardRisk,stop=entry-side*risk,target=entry+side*risk*rr,riskBudget=Math.max(0,equity)*cfg.riskPerTradePct/100,riskQty=riskBudget/risk,maxNotional=Math.max(0,equity)*cfg.maxPositionPct/100*Math.max(1,cfg.leverage),qty=Math.min(riskQty,maxNotional/entry);if(qty>0)open={side,entry,stop,target,qty,bars:0};}}
   peak=Math.max(peak,equity);maxDd=Math.max(maxDd,peak?(peak-equity)/peak*100:0);
  }
  if(open){const pnl=closePnl(c[end-1].close,open,fee,slip);tr.push(equity?100*pnl/equity:0);pnls.push(pnl);equity+=pnl;}return summarize(id,pnls,cfg.initialCapital,maxDd,tr);
