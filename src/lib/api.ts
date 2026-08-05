@@ -1,28 +1,23 @@
 import { startEngine, stopEngine, restartEngine, isEngineRunning, getMarketTicks, getAiRecommendation, closePosition, closeAllPositions, resetAccount, getTickCount } from './engineV2';
 import { getAccount, getPositions, getTrades, getPerformance, getSnapshots, getSettings, updateSettings } from './repository';
 import { runValidation, type BacktestConfig, type ValidationReport } from './backtest';
-
-export interface ApiResult<T> { ok: boolean; data?: T; error?: string; }
-async function wrap<T>(fn: () => Promise<T>): Promise<ApiResult<T>> { try { return { ok: true, data: await fn() }; } catch (err) { const message = err instanceof Error ? err.message : 'Unknown error'; console.error('[api] error:', message); return { ok: false, error: message }; } }
-
-export async function health(): Promise<ApiResult<{ status: string; engine: boolean; ticks: number; db: string }>> { return wrap(async () => ({ status:'ok', engine:isEngineRunning(), ticks:getTickCount(), db:'pglite' })); }
-export async function botStatus(): Promise<ApiResult<{ status: string; running: boolean; started_at: string|null; uptime_seconds: number; risk_pause_until: string|null }>> { return wrap(async () => { const a=await getAccount(); const uptime=a.started_at?Math.max(0,Math.round((Date.now()-new Date(a.started_at).getTime())/1000)):0; return { status:a.bot_status, running:a.bot_status==='RUNNING', started_at:a.started_at, uptime_seconds:uptime, risk_pause_until:a.risk_pause_until }; }); }
-export async function botStart(): Promise<ApiResult<{ message: string }>> { return wrap(async()=>{const r=await startEngine(); if(!r.ok) throw new Error(r.message); return {message:r.message};}); }
-export async function botStop(): Promise<ApiResult<{ message: string }>> { return wrap(async()=>{const r=await stopEngine(); if(!r.ok) throw new Error(r.message); return {message:r.message};}); }
-export async function botRestart(): Promise<ApiResult<{ message: string }>> { return wrap(async()=>{const r=await restartEngine(); if(!r.ok) throw new Error(r.message); return {message:r.message};}); }
-
-export async function portfolio(): Promise<ApiResult<{cash:number;equity:number;total_pnl:number;realized_pnl:number;unrealized_pnl:number;open_value:number;open_positions:number;closed_trades:number;bot_status:string;started_at:string|null;risk_pause_until:string|null}>> {
-  return wrap(async()=>{const a=await getAccount(), ps=await getPositions(), ts=await getTrades(1000), openValue=ps.reduce((x,p)=>x+p.notional,0), unrealized=ps.reduce((x,p)=>x+p.unrealized_pnl,0); return {cash:a.cash,equity:a.equity,total_pnl:a.total_pnl,realized_pnl:a.realized_pnl,unrealized_pnl:unrealized,open_value:openValue,open_positions:ps.length,closed_trades:ts.length,bot_status:a.bot_status,started_at:a.started_at,risk_pause_until:a.risk_pause_until};});
-}
-export async function positions(): Promise<ApiResult<import('./types').Position[]>> { return wrap(()=>getPositions()); }
-export async function trades(): Promise<ApiResult<import('./types').Trade[]>> { return wrap(()=>getTrades(500)); }
-export async function performance(): Promise<ApiResult<import('./types').Performance>> { return wrap(()=>getPerformance()); }
-export async function snapshots(): Promise<ApiResult<import('./types').Snapshot[]>> { return wrap(()=>getSnapshots(500)); }
-export async function market(): Promise<ApiResult<import('./types').MarketTick[]>> { return wrap(()=>getMarketTicks()); }
-export async function aiRecommendation(symbol?: string): Promise<ApiResult<import('./types').AiRecommendation>> { return wrap(()=>getAiRecommendation(symbol)); }
+export interface ApiResult<T>{ok:boolean;data?:T;error?:string;}
+async function wrap<T>(fn:()=>T|Promise<T>):Promise<ApiResult<T>>{try{return{ok:true,data:await fn()};}catch(err){const message=err instanceof Error?err.message:'Unknown error';console.error('[api] error:',message);return{ok:false,error:message};}}
+export async function health():Promise<ApiResult<{status:string;engine:boolean;ticks:number;db:string}>>{return wrap(()=>({status:'ok',engine:isEngineRunning(),ticks:getTickCount(),db:'pglite'}));}
+export async function botStatus():Promise<ApiResult<{status:string;running:boolean;started_at:string|null;uptime_seconds:number;risk_pause_until:string|null}>>{return wrap(async()=>{const a=await getAccount(),uptime=a.started_at?Math.max(0,Math.round((Date.now()-new Date(a.started_at).getTime())/1000)):0;return{status:a.bot_status,running:a.bot_status==='RUNNING',started_at:a.started_at,uptime_seconds:uptime,risk_pause_until:a.risk_pause_until};});}
+export async function botStart():Promise<ApiResult<{message:string}>>{return wrap(async()=>{const r=await startEngine();if(!r.ok)throw new Error(r.message);return{message:r.message};});}
+export async function botStop():Promise<ApiResult<{message:string}>>{return wrap(async()=>{const r=await stopEngine();if(!r.ok)throw new Error(r.message);return{message:r.message};});}
+export async function botRestart():Promise<ApiResult<{message:string}>>{return wrap(async()=>{const r=await restartEngine();if(!r.ok)throw new Error(r.message);return{message:r.message};});}
+export async function portfolio():Promise<ApiResult<{cash:number;equity:number;total_pnl:number;realized_pnl:number;unrealized_pnl:number;open_value:number;open_positions:number;closed_trades:number;bot_status:string;started_at:string|null;risk_pause_until:string|null}>>{return wrap(async()=>{const a=await getAccount(),ps=await getPositions(),ts=await getTrades(1000),openValue=ps.reduce((x,p)=>x+p.notional,0),unrealized=ps.reduce((x,p)=>x+p.unrealized_pnl,0);return{cash:a.cash,equity:a.equity,total_pnl:a.total_pnl,realized_pnl:a.realized_pnl,unrealized_pnl:unrealized,open_value:openValue,open_positions:ps.length,closed_trades:ts.length,bot_status:a.bot_status,started_at:a.started_at,risk_pause_until:a.risk_pause_until};});}
+export async function positions():Promise<ApiResult<import('./types').Position[]>>{return wrap(()=>getPositions());}
+export async function trades():Promise<ApiResult<import('./types').Trade[]>>{return wrap(()=>getTrades(500));}
+export async function performance():Promise<ApiResult<import('./types').Performance>>{return wrap(()=>getPerformance());}
+export async function snapshots():Promise<ApiResult<import('./types').Snapshot[]>>{return wrap(()=>getSnapshots(500));}
+export async function market():Promise<ApiResult<import('./types').MarketTick[]>>{return wrap(()=>getMarketTicks());}
+export async function aiRecommendation(symbol?:string):Promise<ApiResult<import('./types').AiRecommendation>>{return wrap(()=>getAiRecommendation(symbol));}
 export async function closePositionApi(id:string):Promise<ApiResult<{message:string}>>{return wrap(async()=>{const r=await closePosition(id);if(!r.ok)throw new Error(r.message);return{message:r.message};});}
 export async function closeAllApi():Promise<ApiResult<{message:string}>>{return wrap(async()=>{const r=await closeAllPositions();if(!r.ok)throw new Error(r.message);return{message:r.message};});}
 export async function resetApi():Promise<ApiResult<{message:string}>>{return wrap(async()=>{const r=await resetAccount();if(!r.ok)throw new Error(r.message);return{message:r.message};});}
 export async function getSettingsApi():Promise<ApiResult<import('./types').Settings>>{return wrap(()=>getSettings());}
 export async function updateSettingsApi(s:Partial<import('./types').Settings>):Promise<ApiResult<import('./types').Settings>>{return wrap(()=>updateSettings(s));}
-export async function validationApi(symbol='BTCUSDT', interval='5m', config?:Partial<BacktestConfig>):Promise<ApiResult<ValidationReport>>{return wrap(()=>runValidation(symbol,interval,config));}
+export async function validationApi(symbol='BTCUSDT',interval='5m',config?:Partial<BacktestConfig>):Promise<ApiResult<ValidationReport>>{return wrap(()=>runValidation(symbol,interval,config));}
