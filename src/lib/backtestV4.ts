@@ -26,14 +26,21 @@ const rsi=(x:number[],p=14)=>{const s=x.slice(-(p+1)),d=s.slice(1).map((v,i)=>v-
 const slope=(x:number[])=>{if(x.length<2)return 0;const n=x.length,xm=(n-1)/2,ym=mean(x);let a=0,b=0;for(let i=0;i<n;i++){a+=(i-xm)*(x[i]-ym);b+=(i-xm)**2;}return b?a/b:0;};
 const z=(x:number[],n=40)=>{const s=x.slice(-n),m=mean(s),d=std(s);return d?(s[s.length-1]-m)/d:0;};
 
-function signal(id:string,c:Candle[]):1|-1|0{
- if(c.length<150)return 0;const p=c.map(x=>x.close),last=p[p.length-1],a=atr(c),v=a/last,e9=ema(p,9),e20=ema(p,20),e50=ema(p,50),e100=ema(p,100),r=rsi(p),prior=p.slice(0,-1);
+function signal(id:string,c:Candle[],cfg:BacktestConfig):1|-1|0{
+ if(c.length<150)return 0;
+ // Keep the validator and live/paper engine on one source of truth for the
+ // production strategy. The old V4 production branch duplicated the rules
+ // and had already drifted from strategy.ts.
+ if(id==='production'){
+  const s=evaluateProductionStrategy(c.map(x=>x.close),{minScore:70,lookback:240,feeBps:cfg.feeBps,slippageBps:cfg.slippageBps});
+  return s.action==='LONG'?1:s.action==='SHORT'?-1:0;
+ }
+ const p=c.map(x=>x.close),last=p[p.length-1],a=atr(c),v=a/last,e9=ema(p,9),e20=ema(p,20),e50=ema(p,50),e100=ema(p,100),r=rsi(p),prior=p.slice(0,-1);
  const up=e20>e50&&e50>e100,down=e20<e50&&e50<e100,s12=slope(p.slice(-12))/last,s36=slope(p.slice(-36))/last,m21=last/p[Math.max(0,p.length-22)]-1,m72=last/p[Math.max(0,p.length-73)]-1;
  const h20=hi(prior,20),l20=lo(prior,20),h30=hi(prior,30),l30=lo(prior,30),h40=hi(prior,40),l40=lo(prior,40),h55=hi(prior,55),l55=lo(prior,55);
  const mid=mean(p.slice(-20)),sd=std(p.slice(-20)),upper=mid+2*sd,lower=mid-2*sd,macd=ema(p,12)-ema(p,26),macdPrev=ema(p.slice(0,-1),12)-ema(p.slice(0,-1),26),af=atr(c,10),as=atr(c,40),contract=af>0&&as>0&&af/as<.72;
  const costAware=v>=Math.max(.00045,((10+2)*2/10000)*.55)&&v<=.025;
  switch(id){
-  case'production':return up&&s12>0&&s36>0&&(last>h20||last>e20)&&r>=48&&r<=72&&costAware&&last<=e20+a*2.5?1:down&&s12<0&&s36<0&&(last<l20||last<e20)&&r>=28&&r<=52&&costAware&&last>=e20-a*2.5?-1:0;
   case'ema-trend':return up&&last>e9&&s36>0?1:down&&last<e9&&s36<0?-1:0;
   case'breakout-20':return last>h20&&v>.0015?1:last<l20&&v>.0015?-1:0;
   case'breakout-55':return last>h55&&v>.0018?1:last<l55&&v>.0018?-1:0;
@@ -64,7 +71,7 @@ function closePnl(raw:number,p:{side:1|-1;entry:number;qty:number},fee:number,sl
 function simulate(c:Candle[],id:string,cfg:BacktestConfig,start:number,end:number):StrategyResult{
  let equity=cfg.initialCapital,peak=equity,maxDd=0;const pnls:number[]=[],tr:number[]=[];let open:{side:1|-1;entry:number;stop:number;target:number;qty:number;bars:number}|null=null;const fee=cfg.feeBps/10000,slip=cfg.slippageBps/10000;
  for(let i=Math.max(150,start);i<end;i++){const bar=c[i];let closed=false;if(open){open.bars++;const stop=open.side===1?bar.low<=open.stop:bar.high>=open.stop,tp=open.side===1?bar.high>=open.target:bar.low<=open.target;if(stop||tp||open.bars>=cfg.maxBarsInTrade){const raw=stop?open.stop:tp?open.target:bar.close,pnl=closePnl(raw,open,fee,slip);tr.push(equity?100*pnl/equity:0);pnls.push(pnl);equity+=pnl;open=null;closed=true;}}
-  if(!open&&!closed){const w=c.slice(Math.max(0,i-LOOKBACK),i),side=signal(id,w);if(side){const entry=bar.open*(1+side*slip),risk=Math.max(atr(w)*cfg.stopAtr,entry*.0015),rr=id==='production'?1.8:cfg.rewardRisk,stop=entry-side*risk,target=entry+side*risk*rr,riskBudget=Math.max(0,equity)*cfg.riskPerTradePct/100,riskQty=riskBudget/risk,maxNotional=Math.max(0,equity)*cfg.maxPositionPct/100*Math.max(1,cfg.leverage),qty=Math.min(riskQty,maxNotional/entry);if(qty>0)open={side,entry,stop,target,qty,bars:0};}}
+  if(!open&&!closed){const w=c.slice(Math.max(0,i-LOOKBACK),i),side=signal(id,w,cfg);if(side){const entry=bar.open*(1+side*slip),risk=Math.max(atr(w)*cfg.stopAtr,entry*.0015),rr=id==='production'?1.8:cfg.rewardRisk,stop=entry-side*risk,target=entry+side*risk*rr,riskBudget=Math.max(0,equity)*cfg.riskPerTradePct/100,riskQty=riskBudget/risk,maxNotional=Math.max(0,equity)*cfg.maxPositionPct/100*Math.max(1,cfg.leverage),qty=Math.min(riskQty,maxNotional/entry);if(qty>0)open={side,entry,stop,target,qty,bars:0};}}
   peak=Math.max(peak,equity);maxDd=Math.max(maxDd,peak?(peak-equity)/peak*100:0);
  }
  if(open){const pnl=closePnl(c[end-1].close,open,fee,slip);tr.push(equity?100*pnl/equity:0);pnls.push(pnl);equity+=pnl;}return summarize(id,pnls,cfg.initialCapital,maxDd,tr);
@@ -72,13 +79,11 @@ function simulate(c:Candle[],id:string,cfg:BacktestConfig,start:number,end:numbe
 function intervalMs(interval:string){const m=interval.match(/^(\d+)([mhdw])$/i);if(!m)throw new Error(`Unsupported interval: ${interval}`);const n=Number(m[1]),u=m[2].toLowerCase();return n*(u==='m'?60000:u==='h'?3600000:u==='d'?86400000:604800000);}
 export async function fetchHistoricalCandles(symbol='BTCUSDT',interval='5m',limit=MAX_HISTORY_BARS):Promise<Candle[]>{const target=Math.min(MAX_HISTORY_BARS,Math.max(MIN_HISTORY,limit)),ms=intervalMs(interval),start=Math.max(0,Date.now()-target*ms),rows:unknown[][]=[];let cursor=start;while(rows.length<target){const n=Math.min(1000,target-rows.length),url=`https://data-api.binance.vision/api/v3/klines?symbol=${encodeURIComponent(symbol)}&interval=${encodeURIComponent(interval)}&startTime=${cursor}&limit=${n}`,res=await fetch(url,{headers:{Accept:'application/json'}});if(!res.ok)throw new Error(`Historical market data request failed (${res.status}).`);const batch=await res.json() as unknown[][];if(!batch.length)break;rows.push(...batch);const last=Number(batch[batch.length-1]?.[0]);if(!Number.isFinite(last))break;cursor=last+ms;if(batch.length<n)break;await new Promise(r=>setTimeout(r,80));}const seen=new Set<number>(),now=Date.now();return rows.map(r=>({openTime:Number(r[0]),open:Number(r[1]),high:Number(r[2]),low:Number(r[3]),close:Number(r[4]),volume:Number(r[5])})).filter(c=>[c.openTime,c.open,c.high,c.low,c.close,c.volume].every(Number.isFinite)&&c.openTime+ms<=now&&!seen.has(c.openTime)&&seen.add(c.openTime)).sort((a,b)=>a.openTime-b.openTime).slice(-target);}
 function mc(ret:number[],runs=5000,seed=0x7a11){if(!ret.length)return{simulations:runs,probabilityOfLoss:100,medianReturnPct:0,p05ReturnPct:0,p95MaxDrawdownPct:0};let s=seed>>>0;const rnd=()=>{s=(1664525*s+1013904223)>>>0;return s/4294967296};const finals:number[]=[],dds:number[]=[];for(let k=0;k<runs;k++){let eq=1,peak=1,dd=0;for(let i=0;i<ret.length;i++){const r=ret[Math.floor(rnd()*ret.length)]/100;eq*=1+r;peak=Math.max(peak,eq);dd=Math.max(dd,(peak-eq)/peak*100);}finals.push((eq-1)*100);dds.push(dd);}finals.sort((a,b)=>a-b);dds.sort((a,b)=>a-b);return{simulations:runs,probabilityOfLoss:finals.filter(x=>x<0).length/runs*100,medianReturnPct:finals[Math.floor(runs*.5)]??0,p05ReturnPct:finals[Math.floor(runs*.05)]??0,p95MaxDrawdownPct:dds[Math.floor(runs*.95)]??0};}
-
 function aggregateFolds(id:string,folds:StrategyResult[]):StrategyResult{
  if(!folds.length)return summarize(id,[],10000,0,[]);
  const trades=folds.reduce((a,b)=>a+b.trades,0),wins=folds.reduce((a,b)=>a+b.wins,0),losses=folds.reduce((a,b)=>a+b.losses,0),returns=folds.flatMap(f=>f.tradeReturnsPct),avgReturn=mean(folds.map(f=>f.returnPct)),avgPf=mean(folds.map(f=>f.profitFactor)),avgDd=mean(folds.map(f=>f.maxDrawdownPct)),stability=folds.filter(f=>f.returnPct>0&&f.profitFactor>=1).length/folds.length;
  return {...folds[folds.length-1],trades,wins,losses,winRate:trades?wins/trades*100:0,returnPct:avgReturn,profitFactor:avgPf,maxDrawdownPct:avgDd,tradeReturnsPct:returns,score:mean(folds.map(f=>f.score))+stability*3};
 }
-
 export async function runValidation(symbol='BTCUSDT',interval='5m',cfg:Partial<BacktestConfig>={},selectedStrategyId?:string):Promise<ValidationReport>{
  const config={...DEFAULT_BACKTEST_CONFIG,...cfg},candles=await fetchHistoricalCandles(symbol,interval,MAX_HISTORY_BARS);if(candles.length<MIN_HISTORY)throw new Error(`Need at least ${MIN_HISTORY.toLocaleString()} completed candles; received ${candles.length.toLocaleString()}.`);
  const ms=intervalMs(interval),gaps=candles.slice(1).filter((x,i)=>x.openTime-candles[i].openTime!==ms).length,dup=candles.length-new Set(candles.map(x=>x.openTime)).size,duration=(candles[candles.length-1].openTime-candles[0].openTime)/86400000;
