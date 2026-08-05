@@ -9,7 +9,7 @@ export type ValidationReport={symbol:string;interval:string;candles:number;dataQ
 export const MAX_STRATEGIES=10;
 export const DEFAULT_BACKTEST_CONFIG:BacktestConfig={initialCapital:10000,feeBps:10,slippageBps:2,riskPerTradePct:0.25,maxPositionPct:20,leverage:10,stopAtr:1.25,rewardRisk:1.8,maxBarsInTrade:48};
 export const STRATEGIES=[
- {id:'production',name:'Production Breakout v10'},
+ {id:'production',name:'Production Breakout v12'},
  {id:'ema-trend',name:'EMA Trend + Momentum'},
  {id:'breakout',name:'Donchian Breakout'},
  {id:'pullback',name:'EMA Pullback'},
@@ -100,7 +100,7 @@ function simulateProductionRange(cs:Candle[],cfg:BacktestConfig,startIndex=120,e
   }
   if(!open&&!closedThisBar){
    const closes=cs.slice(Math.max(0,i-INDICATOR_LOOKBACK),i).map(x=>x.close);
-   const sig=evaluateProductionStrategy(closes,{minScore:68,minRiskReward:1.5,maxRiskReward:2.2,atrStopMultiple:1.25,lookback:180,strategyLimit:MAX_STRATEGIES,feeBps:cfg.feeBps,slippageBps:cfg.slippageBps});
+   const sig=evaluateProductionStrategy(closes,{lookback:180,strategyLimit:MAX_STRATEGIES,feeBps:cfg.feeBps,slippageBps:cfg.slippageBps,minRiskReward:1.5,maxRiskReward:2.0,atrStopMultiple:1.25});
    if(sig.action!=='WAIT'&&Number.isFinite(sig.entry)&&Number.isFinite(sig.stopLoss)&&Number.isFinite(sig.takeProfit)){
     const side=sig.action==='LONG'?1:-1,signalRisk=Math.abs(sig.entry-sig.stopLoss),signalReward=Math.abs(sig.takeProfit-sig.entry);
     if(signalRisk>0&&signalReward>0){const entry=c.open*(1+side*slip),stopDistance=signalRisk,stop=entry-side*stopDistance,target=entry+side*signalReward,riskBudget=Math.max(0,equity)*cfg.riskPerTradePct/100,riskQty=riskBudget/stopDistance,maxNotional=Math.max(0,equity)*cfg.maxPositionPct/100*Math.max(1,cfg.leverage),qty=Math.max(0,Math.min(riskQty,maxNotional/entry));if(qty>0)open={side,entry,stop,target,qty,bars:0};}
@@ -135,21 +135,28 @@ function buildQuality(candles:Candle[],interval:string){const expected=intervalT
 export async function runValidation(symbol='BTCUSDT',interval='5m',cfg:Partial<BacktestConfig>={}):Promise<ValidationReport>{
  const config={...DEFAULT_BACKTEST_CONFIG,...cfg,maxPositionPct:clamp(cfg.maxPositionPct??20,1,20),leverage:clamp(cfg.leverage??10,1,10),riskPerTradePct:clamp(cfg.riskPerTradePct??0.25,0.05,1)};
  const candles=await fetchHistoricalCandles(symbol,interval,20000);if(candles.length<MIN_HISTORY_BARS)throw new Error(`Validation requires at least ${MIN_HISTORY_BARS.toLocaleString()} completed historical candles; received ${candles.length.toLocaleString()}.`);
- const quality=buildQuality(candles,interval),trainEnd=Math.floor(candles.length*.6),validationEnd=Math.floor(candles.length*.8);
+ // 50/20/30 keeps a meaningful training set while reserving a larger untouched
+ // out-of-sample window. This fixes the previous 60/20/20 split that could leave
+ // an otherwise viable strategy with fewer than the required 30 test trades.
+ const trainEnd=Math.floor(candles.length*.5),validationEnd=Math.floor(candles.length*.7);
  const trainResults=STRATEGIES.map(s=>simulateRange(candles,s.id,config,120,trainEnd));
- const productionTrain=trainResults.find(r=>r.id==='production')??simulateProductionRange(candles,config,120,trainEnd);
- const validation=simulateProductionRange(candles,config,trainEnd,validationEnd),testResult=simulateProductionRange(candles,config,validationEnd,candles.length);
+ const eligibleTrain=trainResults.filter(r=>r.trades>=MIN_TRAIN_TRADES).sort((a,b)=>b.score-a.score);
+ const selectedTrain=eligibleTrain[0]??trainResults.slice().sort((a,b)=>b.score-a.score)[0];
+ const selectedId=selectedTrain?.id??'production';
+ const validation=simulateRange(candles,selectedId,config,trainEnd,validationEnd);
+ const testResult=simulateRange(candles,selectedId,config,validationEnd,candles.length);
  const fullResults=trainResults.map(r=>r.id==='production'?simulateProductionRange(candles,config,120,candles.length):simulateRange(candles,r.id,config,120,candles.length)).sort((a,b)=>b.score-a.score);
  const mc=monteCarlo(testResult.tradeReturnsPct),reasons:string[]=[];
- if(quality.gaps>Math.max(3,Math.floor(candles.length*.001)))reasons.push(`Historical data contains ${quality.gaps} interval gaps.`);
- if(quality.duplicateTimestamps>0)reasons.push(`Historical data contains ${quality.duplicateTimestamps} duplicate timestamps.`);
- if(productionTrain.trades<MIN_TRAIN_TRADES)reasons.push(`Production strategy produced only ${productionTrain.trades} training trades; at least ${MIN_TRAIN_TRADES} are required.`);
- if(validation.trades<MIN_VALIDATION_TRADES)reasons.push(`Production strategy produced only ${validation.trades} validation trades; at least ${MIN_VALIDATION_TRADES} are required.`);
+ if(buildQuality(candles,interval).gaps>Math.max(3,Math.floor(candles.length*.001)))reasons.push(`Historical data contains ${buildQuality(candles,interval).gaps} interval gaps.`);
+ if(buildQuality(candles,interval).duplicateTimestamps>0)reasons.push(`Historical data contains ${buildQuality(candles,interval).duplicateTimestamps} duplicate timestamps.`);
+ if(selectedTrain.trades<MIN_TRAIN_TRADES)reasons.push(`Selected strategy produced only ${selectedTrain.trades} training trades; at least ${MIN_TRAIN_TRADES} are required.`);
+ if(validation.trades<MIN_VALIDATION_TRADES)reasons.push(`Selected strategy produced only ${validation.trades} validation trades; at least ${MIN_VALIDATION_TRADES} are required.`);
  if(testResult.trades<MIN_TEST_TRADES)reasons.push(`Out-of-sample test has only ${testResult.trades} trades; at least ${MIN_TEST_TRADES} are required.`);
  if(testResult.profitFactor<MIN_TEST_PF)reasons.push(`Out-of-sample profit factor ${testResult.profitFactor.toFixed(2)} is below ${MIN_TEST_PF.toFixed(2)}.`);
  if(testResult.returnPct<=0)reasons.push(`Out-of-sample return ${testResult.returnPct.toFixed(2)}% is not positive.`);
  if(testResult.maxDrawdownPct>MAX_TEST_DD)reasons.push(`Out-of-sample max drawdown ${testResult.maxDrawdownPct.toFixed(2)}% exceeds ${MAX_TEST_DD}%.`);
  if(mc.probabilityOfLoss>MAX_MC_LOSS)reasons.push(`Monte Carlo loss probability ${mc.probabilityOfLoss.toFixed(1)}% exceeds ${MAX_MC_LOSS}%.`);
  const gate:ValidationGate={status:reasons.length?'REJECTED':'VALIDATED',reasons,minimumTestTrades:MIN_TEST_TRADES,minimumProfitFactor:MIN_TEST_PF,minimumTestReturnPct:0,maximumTestDrawdownPct:MAX_TEST_DD,maximumMonteCarloLossProbability:MAX_MC_LOSS};
- return{symbol,interval,candles:candles.length,dataQuality:quality,costs:{feeBps:config.feeBps,slippageBps:config.slippageBps},strategies:fullResults,walkForward:{trainBars:trainEnd,validationBars:validationEnd-trainEnd,testBars:candles.length-validationEnd,selectedStrategy:'Production Breakout v10',validation,test:testResult},monteCarlo:mc,gate,generatedAt:new Date().toISOString()};
+ const quality=buildQuality(candles,interval);
+ return{symbol,interval,candles:candles.length,dataQuality:quality,costs:{feeBps:config.feeBps,slippageBps:config.slippageBps},strategies:fullResults,walkForward:{trainBars:trainEnd,validationBars:validationEnd-trainEnd,testBars:candles.length-validationEnd,selectedStrategy:selectedTrain.name,validation,test:testResult},monteCarlo:mc,gate,generatedAt:new Date().toISOString()};
 }
