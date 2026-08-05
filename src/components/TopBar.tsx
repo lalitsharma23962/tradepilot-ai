@@ -87,7 +87,7 @@ export function TopBar({ page }: { page: Page }) {
           <span className={`mr-1.5 inline-block h-1.5 w-1.5 rounded-full ${running ? 'bg-emerald-400 animate-pulse' : 'bg-slate-500'}`} />
           {running ? 'Bot Running' : 'Bot Stopped'}
         </Badge>
-        {!gateValidated && !running && <Badge tone="negative">Validation Rejected</Badge>}
+        {!gateValidated && !running && <Badge tone="negative">Validation Required</Badge>}
         {running && (
           <span className="flex items-center gap-1 text-xs text-slate-500">
             <Clock className="h-3.5 w-3.5" />
@@ -104,9 +104,14 @@ export function TopBar({ page }: { page: Page }) {
         </div>
         <div className="flex items-center gap-2">
           {!running ? (
-            <Button onClick={handleStart} disabled={busy || !gateValidated} size="sm">
+            <Button
+              onClick={handleStart}
+              disabled={busy || !gateValidated}
+              size="sm"
+              title={gateValidated ? 'Start the paper-trading engine' : 'Run and pass historical validation before starting the paper bot'}
+            >
               <Play className="h-3.5 w-3.5" />
-              {gateValidated ? 'Start Paper Bot' : 'Validation Required'}
+              Start Paper Bot
             </Button>
           ) : (
             <Button onClick={handleStop} disabled={busy} variant="danger" size="sm">
