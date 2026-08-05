@@ -1,14 +1,10 @@
 import { startEngine, stopEngine, restartEngine, isEngineRunning, getMarketTicks, getAiRecommendation, closePosition, closeAllPositions, resetAccount, getTickCount } from './engineV2';
 import { getAccount, getPositions, getTrades, getPerformance, getSnapshots, getSettings, updateSettings } from './repository';
 import { getValidationGate, setValidationGate } from './db';
-import { runValidation, type BacktestConfig, type ValidationReport } from './backtestV2';
+import { runValidation, type BacktestConfig, type ValidationReport } from './backtest';
 
 export interface ApiResult<T>{ok:boolean;data?:T;error?:string;}
 async function wrap<T>(fn:()=>T|Promise<T>):Promise<ApiResult<T>>{try{return{ok:true,data:await fn()};}catch(err){const message=err instanceof Error?err.message:'Unknown error';console.error('[api] error:',message);return{ok:false,error:message};}}
-function normalizeValidationReport(report:ValidationReport):ValidationReport{
- const rename=(value:string)=>value.replace(/Production Breakout v5/g,'Production Breakout v11').replace(/Production Breakout v8/g,'Production Breakout v11').replace(/Production Breakout v9/g,'Production Breakout v11').replace(/Production Breakout v10/g,'Production Breakout v11');
- return {...report,strategies:report.strategies.map(s=>({...s,name:rename(s.name)})),walkForward:{...report.walkForward,selectedStrategy:rename(report.walkForward.selectedStrategy)},gate:{...report.gate,reasons:report.gate.reasons.map(rename)}};
-}
 export async function health():Promise<ApiResult<{status:string;engine:boolean;ticks:number;db:string}>>{return wrap(()=>({status:'ok',engine:isEngineRunning(),ticks:getTickCount(),db:'pglite'}));}
 export async function botStatus():Promise<ApiResult<{status:string;running:boolean;started_at:string|null;uptime_seconds:number;risk_pause_until:string|null}>>{return wrap(async()=>{const a=await getAccount(),uptime=a.started_at?Math.max(0,Math.round((Date.now()-new Date(a.started_at).getTime())/1000)):0;return{status:a.bot_status,running:a.bot_status==='RUNNING',started_at:a.started_at,uptime_seconds:uptime,risk_pause_until:a.risk_pause_until};});}
 export async function validationGateApi():Promise<ApiResult<Awaited<ReturnType<typeof getValidationGate>>>>{return wrap(()=>getValidationGate());}
@@ -27,4 +23,4 @@ export async function aiRecommendation(symbol?:string):Promise<ApiResult<import(
 export async function closePositionApi(positionId:string):Promise<ApiResult<{ok:boolean;message:string}>>{return wrap(()=>closePosition(positionId));}
 export async function closeAllApi():Promise<ApiResult<{ok:boolean;message:string}>>{return wrap(()=>closeAllPositions());}
 export async function resetApi():Promise<ApiResult<{ok:boolean;message:string}>>{return wrap(()=>resetAccount());}
-export async function validationApi(symbol='BTCUSDT',interval='5m',cfg:Partial<BacktestConfig>={}):Promise<ApiResult<ValidationReport>>{return wrap(async()=>{const report=normalizeValidationReport(await runValidation(symbol,interval,cfg));await setValidationGate({status:report.gate.status,symbol,interval,candles:report.candles,testReturnPct:report.walkForward.test?.returnPct??0,testProfitFactor:report.walkForward.test?.profitFactor??0,monteCarloLossPct:report.monteCarlo.probabilityOfLoss});return report;});}
+export async function validationApi(symbol='BTCUSDT',interval='5m',cfg:Partial<BacktestConfig>={}):Promise<ApiResult<ValidationReport>>{return wrap(async()=>{const report=await runValidation(symbol,interval,cfg);await setValidationGate({status:report.gate.status,symbol,interval,candles:report.candles,testReturnPct:report.walkForward.test?.returnPct??0,testProfitFactor:report.walkForward.test?.profitFactor??0,monteCarloLossPct:report.monteCarlo.probabilityOfLoss});return report;});}
