@@ -26,23 +26,40 @@ function low(values:number[],n:number):number{return Math.min(...values.slice(-n
 function clamp(value:number,min:number,max:number):number{return Math.max(min,Math.min(max,value));}
 function waitSignal(entry:number,reasons:string[],score=0):StrategySignal{const normalized=Math.round(clamp(score,0,100));return{action:'WAIT',score:normalized,confidence:normalized,strategy:'No Trade',entry,stopLoss:entry,takeProfit:entry,riskReward:0,reasons};}
 
+/**
+ * Production evaluator used by both paper execution and historical validation.
+ * The previous version required five simultaneous conditions, including a
+ * fresh 20-bar breakout. That made valid setups excessively sparse on 5m data.
+ * This keeps the hard production gate but accepts either a fresh 12-bar break
+ * or a confirmed EMA reclaim, while retaining trend, momentum, volatility and
+ * extension controls. The validation gate still decides whether this strategy
+ * is allowed to trade at all.
+ */
 function scoreProduction(prices:number[],cfg:StrategyConfig):StrategySignal{
  const clean=prices.filter(p=>Number.isFinite(p)&&p>0).slice(-cfg.lookback),entry=clean.length?clean[clean.length-1]:0;
  if(clean.length<120||entry<=0)return waitSignal(entry,['Not enough history']);
  const ema20=ema(clean,20),ema50=ema(clean,50),ema100=ema(clean,100),atr=atrLike(clean,20),volatility=atr/entry,momentum=slope(clean.slice(-12))/entry;
- const momentumThreshold=Math.max(volatility*0.12,0.00025),currentRsi=rsi(clean,14),prior=clean.slice(0,-1),high20=high(prior,20),low20=low(prior,20),medium=clean.slice(-30),mediumStd=std(medium),z=mediumStd>0?(entry-mean(medium))/mediumStd:0;
- const longTrend=ema20>ema50&&ema50>ema100,shortTrend=ema20<ema50&&ema50<ema100,longMomentum=momentum>momentumThreshold,shortMomentum=momentum<-momentumThreshold,longBreak=entry>high20+atr*0.05,shortBreak=entry<low20-atr*0.05,saneVolatility=volatility>=0.001&&volatility<=0.008,longNotExtended=currentRsi>=52&&currentRsi<=70&&z<2,shortNotExtended=currentRsi>=30&&currentRsi<=48&&z>-2;
- const longConfirmed=longTrend&&longMomentum&&longBreak&&saneVolatility&&longNotExtended,shortConfirmed=shortTrend&&shortMomentum&&shortBreak&&saneVolatility&&shortNotExtended;
- if(!longConfirmed&&!shortConfirmed){const partial=Math.round((longTrend||shortTrend?25:0)+(longMomentum||shortMomentum?20:0)+(longBreak||shortBreak?25:0)+(saneVolatility?15:0));return waitSignal(entry,['Production confirmation incomplete'],partial);}
+ const momentumThreshold=Math.max(volatility*0.06,0.00012),currentRsi=rsi(clean,14),prior=clean.slice(0,-1),high12=high(prior,12),low12=low(prior,12),high20=high(prior,20),low20=low(prior,20);
+ const medium=clean.slice(-30),mediumStd=std(medium),z=mediumStd>0?(entry-mean(medium))/mediumStd:0;
+ const longTrend=ema20>ema50&&ema50>ema100,shortTrend=ema20<ema50&&ema50<ema100;
+ const longMomentum=momentum>momentumThreshold,shortMomentum=momentum<-momentumThreshold;
+ const longBreak=entry>high12&&entry>high20,shortBreak=entry<low12&&entry<low20;
+ const longReclaim=entry>ema20&&clean.slice(-6,-1).some(p=>p<=ema20),shortReclaim=entry<ema20&&clean.slice(-6,-1).some(p=>p>=ema20);
+ const saneVolatility=volatility>=0.0007&&volatility<=0.012;
+ const longNotExtended=currentRsi>=50&&currentRsi<=72&&z<2.25,shortNotExtended=currentRsi>=28&&currentRsi<=50&&z>-2.25;
+ const longTrigger=longBreak||(longReclaim&&longTrend),shortTrigger=shortBreak||(shortReclaim&&shortTrend);
+ const longConfirmed=longTrend&&longMomentum&&longTrigger&&saneVolatility&&longNotExtended;
+ const shortConfirmed=shortTrend&&shortMomentum&&shortTrigger&&saneVolatility&&shortNotExtended;
+ if(!longConfirmed&&!shortConfirmed){const partial=Math.round((longTrend||shortTrend?25:0)+(longMomentum||shortMomentum?20:0)+(longTrigger||shortTrigger?25:0)+(saneVolatility?15:0));return waitSignal(entry,['Production confirmation incomplete'],partial);}
  const side:Side=longConfirmed?'LONG':'SHORT',stopDistance=Math.max(atr*cfg.atrStopMultiple,entry*0.0015),riskReward=clamp(2.2,cfg.minRiskReward,cfg.maxRiskReward),stopLoss=side==='LONG'?entry-stopDistance:entry+stopDistance,takeProfit=side==='LONG'?entry+stopDistance*riskReward:entry-stopDistance*riskReward;
- const reasons=side==='LONG'?['bullish EMA regime','confirmed momentum','fresh 20-bar breakout','sane volatility','not overextended']:['bearish EMA regime','confirmed momentum','fresh 20-bar breakdown','sane volatility','not overextended'];
+ const triggerReason=side==='LONG'?(longBreak?'fresh 12/20-bar breakout':'EMA20 reclaim'):(shortBreak?'fresh 12/20-bar breakdown':'EMA20 reclaim');
+ const reasons=side==='LONG'?['bullish EMA regime','confirmed momentum',triggerReason,'sane volatility','not overextended']:['bearish EMA regime','confirmed momentum',triggerReason,'sane volatility','not overextended'];
  return{action:side,score:100,confidence:100,strategy:'Production Breakout v5',entry,stopLoss,takeProfit,riskReward,reasons};
 }
-export function evaluateProductionStrategy(prices:number[],config:Partial<StrategyConfig>={}):StrategySignal{return scoreProduction(prices,{...DEFAULT_CONFIG,...config});}
 
 function scoreProfile(prices:number[],cfg:StrategyConfig,profile:typeof PROFILES[number]):StrategySignal{
  const clean=prices.filter(p=>Number.isFinite(p)&&p>0).slice(-cfg.lookback),entry=clean.length?clean[clean.length-1]:0;if(clean.length<120||entry<=0)return waitSignal(entry,['Not enough history']);
- const ema20=ema(clean,20),ema50=ema(clean,50),ema100=ema(clean,100),atr=atrLike(clean,20),atrFast=atrLike(clean,8),volatility=atr/entry,momentum=slope(clean.slice(-12))/entry,momentumThreshold=Math.max(volatility*0.06,0.00012),currentRsi=rsi(clean,14),prior=clean.slice(0,-1),high12=high(prior,12),low12=low(prior,12),high20=high(prior,20),low20=low(prior,20),range50=high(prior,50)-low(prior,50),medium=clean.slice(-30),mediumStd=std(medium),z=mediumStd>0?(entry-mean(medium))/mediumStd:0,compressed=atr>0&&atrFast/atr<0.9;
+ const ema20=ema(clean,20),ema50=ema(clean,50),ema100=ema(clean,100),atr=atrLike(clean,20),atrFast=atrLike(clean,8),volatility=atr/entry,momentum=slope(clean.slice(-12))/entry,momentumThreshold=Math.max(volatility*0.06,0.00012),currentRsi=rsi(clean,14),prior=clean.slice(0,-1),high12=high(prior,12),low12=low(prior,12),high20=high(prior,20),low20=low(prior,20),range50=high(prior,50)-low(prior),medium=clean.slice(-30),mediumStd=std(medium),z=mediumStd>0?(entry-mean(medium))/mediumStd:0,compressed=atr>0&&atrFast/atr<0.9;
  let longScore=0,shortScore=0;const longReasons:string[]=[],shortReasons:string[]=[],longTrend=ema20>ema50&&ema50>ema100,shortTrend=ema20<ema50&&ema50<ema100;
  if(longTrend){longScore+=profile.trend;longReasons.push('bullish EMA regime');}if(shortTrend){shortScore+=profile.trend;shortReasons.push('bearish EMA regime');}if(momentum>momentumThreshold){longScore+=profile.momentum;longReasons.push('positive momentum');}if(momentum<-momentumThreshold){shortScore+=profile.momentum;shortReasons.push('negative momentum');}
  const longBreak=entry>high20&&entry>high12,shortBreak=entry<low20&&entry<low12,longReclaim=entry>ema20&&clean.slice(-6,-1).some(p=>p<=ema20),shortReclaim=entry<ema20&&clean.slice(-6,-1).some(p=>p>=ema20);
