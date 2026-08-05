@@ -32,99 +32,46 @@ CREATE TABLE IF NOT EXISTS tp_account (
   risk_alerts boolean NOT NULL DEFAULT true,
   created_at timestamptz NOT NULL DEFAULT now()
 );
-
 CREATE TABLE IF NOT EXISTS tp_positions (
-  id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
-  symbol text NOT NULL,
-  side text NOT NULL,
-  quantity numeric(20,8) NOT NULL,
-  entry_price numeric(20,8) NOT NULL,
-  current_price numeric(20,8) NOT NULL,
-  notional numeric(20,2) NOT NULL,
-  unrealized_pnl numeric(20,2) NOT NULL DEFAULT 0.00,
-  stop_loss numeric(20,8) NOT NULL,
-  take_profit numeric(20,8) NOT NULL,
-  strategy text NOT NULL DEFAULT 'AI Signal',
-  status text NOT NULL DEFAULT 'OPEN',
-  opened_at timestamptz NOT NULL DEFAULT now()
+  id uuid PRIMARY KEY DEFAULT gen_random_uuid(), symbol text NOT NULL, side text NOT NULL, quantity numeric(20,8) NOT NULL,
+  entry_price numeric(20,8) NOT NULL, current_price numeric(20,8) NOT NULL, notional numeric(20,2) NOT NULL,
+  unrealized_pnl numeric(20,2) NOT NULL DEFAULT 0.00, stop_loss numeric(20,8) NOT NULL, take_profit numeric(20,8) NOT NULL,
+  strategy text NOT NULL DEFAULT 'AI Signal', status text NOT NULL DEFAULT 'OPEN', opened_at timestamptz NOT NULL DEFAULT now()
 );
-
 CREATE TABLE IF NOT EXISTS tp_trades (
-  id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
-  symbol text NOT NULL,
-  side text NOT NULL,
-  quantity numeric(20,8) NOT NULL,
-  entry_price numeric(20,8) NOT NULL,
-  exit_price numeric(20,8) NOT NULL,
-  pnl numeric(20,2) NOT NULL,
-  return_pct numeric(10,2) NOT NULL,
-  strategy text NOT NULL DEFAULT 'AI Signal',
-  status text NOT NULL DEFAULT 'CLOSED',
-  opened_at timestamptz NOT NULL,
-  closed_at timestamptz NOT NULL DEFAULT now()
+  id uuid PRIMARY KEY DEFAULT gen_random_uuid(), symbol text NOT NULL, side text NOT NULL, quantity numeric(20,8) NOT NULL,
+  entry_price numeric(20,8) NOT NULL, exit_price numeric(20,8) NOT NULL, pnl numeric(20,2) NOT NULL,
+  return_pct numeric(10,2) NOT NULL, strategy text NOT NULL DEFAULT 'AI Signal', status text NOT NULL DEFAULT 'CLOSED',
+  opened_at timestamptz NOT NULL, closed_at timestamptz NOT NULL DEFAULT now()
 );
-
 CREATE TABLE IF NOT EXISTS tp_snapshots (
-  id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
-  equity numeric(20,2) NOT NULL,
-  cash numeric(20,2) NOT NULL,
-  open_value numeric(20,2) NOT NULL,
-  unrealized_pnl numeric(20,2) NOT NULL,
-  realized_pnl numeric(20,2) NOT NULL,
+  id uuid PRIMARY KEY DEFAULT gen_random_uuid(), equity numeric(20,2) NOT NULL, cash numeric(20,2) NOT NULL,
+  open_value numeric(20,2) NOT NULL, unrealized_pnl numeric(20,2) NOT NULL, realized_pnl numeric(20,2) NOT NULL,
   ts timestamptz NOT NULL DEFAULT now()
 );
-
+CREATE TABLE IF NOT EXISTS tp_validation_gate (
+  id integer PRIMARY KEY DEFAULT 1,
+  status text NOT NULL DEFAULT 'REJECTED',
+  symbol text NOT NULL DEFAULT 'BTCUSDT', interval text NOT NULL DEFAULT '5m', candles integer NOT NULL DEFAULT 0,
+  test_return_pct numeric(12,4) NOT NULL DEFAULT 0, test_profit_factor numeric(12,4) NOT NULL DEFAULT 0,
+  monte_carlo_loss_pct numeric(12,4) NOT NULL DEFAULT 100, generated_at timestamptz NOT NULL DEFAULT now()
+);
 CREATE INDEX IF NOT EXISTS idx_tp_snapshots_ts ON tp_snapshots(ts);
 CREATE INDEX IF NOT EXISTS idx_tp_trades_closed_at ON tp_trades(closed_at);
 `;
-
 const SEED_SQL = `
 INSERT INTO tp_account (id, cash, equity, total_pnl, realized_pnl, bot_status)
-SELECT 1, 10000.00, 10000.00, 0.00, 0.00, 'STOPPED'
-WHERE NOT EXISTS (SELECT 1 FROM tp_account WHERE id = 1);
+SELECT 1, 10000.00, 10000.00, 0.00, 0.00, 'STOPPED' WHERE NOT EXISTS (SELECT 1 FROM tp_account WHERE id = 1);
+INSERT INTO tp_validation_gate (id,status) VALUES (1,'REJECTED') ON CONFLICT (id) DO NOTHING;
 `;
-
 export async function getDb(): Promise<PGlite> {
   if (dbInstance) return dbInstance;
   if (initPromise) return initPromise;
-
-  initPromise = (async () => {
-    const location = typeof indexedDB !== 'undefined' ? 'idb://tradepilot' : undefined;
-    const db = new PGlite(location);
-    await db.exec(SCHEMA_SQL);
-    await db.exec(`ALTER TABLE tp_account ADD COLUMN IF NOT EXISTS max_strategies integer NOT NULL DEFAULT 10;`);
-    await db.exec(`ALTER TABLE tp_account ADD COLUMN IF NOT EXISTS loss_limit_pct numeric(5,2) NOT NULL DEFAULT 2.00;`);
-    await db.exec(`ALTER TABLE tp_account ADD COLUMN IF NOT EXISTS risk_pause_until timestamptz;`);
-    await db.exec(`ALTER TABLE tp_account ADD COLUMN IF NOT EXISTS fee_bps numeric(6,2) NOT NULL DEFAULT 10.00;`);
-    await db.exec(`ALTER TABLE tp_account ADD COLUMN IF NOT EXISTS slippage_bps numeric(6,2) NOT NULL DEFAULT 2.00;`);
-    await db.exec(`ALTER TABLE tp_account ADD COLUMN IF NOT EXISTS confidence_threshold_pct numeric(5,2) NOT NULL DEFAULT 75.00;`);
-    await db.exec(`ALTER TABLE tp_account ADD COLUMN IF NOT EXISTS leverage numeric(5,2) NOT NULL DEFAULT 1.00;`);
-    await db.exec(`UPDATE tp_account SET max_strategies = LEAST(GREATEST(max_strategies, 1), 10), max_allocation_pct = LEAST(max_allocation_pct, 20), leverage = LEAST(GREATEST(leverage, 1), 10), loss_limit_pct = LEAST(GREATEST(loss_limit_pct, 0.25), 20);`);
-    await db.exec(SEED_SQL);
-    dbInstance = db;
-    return db;
-  })();
-
-  return initPromise;
+  initPromise=(async()=>{const location=typeof indexedDB!=='undefined'?'idb://tradepilot':undefined,db=new PGlite(location);await db.exec(SCHEMA_SQL);await db.exec(`ALTER TABLE tp_account ADD COLUMN IF NOT EXISTS max_strategies integer NOT NULL DEFAULT 10;`);await db.exec(`ALTER TABLE tp_account ADD COLUMN IF NOT EXISTS loss_limit_pct numeric(5,2) NOT NULL DEFAULT 2.00;`);await db.exec(`ALTER TABLE tp_account ADD COLUMN IF NOT EXISTS risk_pause_until timestamptz;`);await db.exec(`ALTER TABLE tp_account ADD COLUMN IF NOT EXISTS fee_bps numeric(6,2) NOT NULL DEFAULT 10.00;`);await db.exec(`ALTER TABLE tp_account ADD COLUMN IF NOT EXISTS slippage_bps numeric(6,2) NOT NULL DEFAULT 2.00;`);await db.exec(`ALTER TABLE tp_account ADD COLUMN IF NOT EXISTS confidence_threshold_pct numeric(5,2) NOT NULL DEFAULT 75.00;`);await db.exec(`ALTER TABLE tp_account ADD COLUMN IF NOT EXISTS leverage numeric(5,2) NOT NULL DEFAULT 1.00;`);await db.exec(`UPDATE tp_account SET max_strategies=LEAST(GREATEST(max_strategies,1),10),max_allocation_pct=LEAST(max_allocation_pct,20),leverage=LEAST(GREATEST(leverage,1),10),loss_limit_pct=LEAST(GREATEST(loss_limit_pct,0.25),20);`);await db.exec(SEED_SQL);dbInstance=db;return db;})();return initPromise;
 }
-
-export async function resetDatabase(): Promise<void> {
-  const db = await getDb();
-  await db.exec('DELETE FROM tp_snapshots;');
-  await db.exec('DELETE FROM tp_trades;');
-  await db.exec('DELETE FROM tp_positions;');
-  await db.exec(
-    `UPDATE tp_account SET cash=10000.00, equity=10000.00, total_pnl=0.00, realized_pnl=0.00, bot_status='STOPPED', started_at=NULL, last_tick_at=NULL, risk_pause_until=NULL, max_strategies=10, max_allocation_pct=20.00, leverage=1.00, loss_limit_pct=2.00, fee_bps=10.00, slippage_bps=2.00;`
-  );
-}
-
-export async function query<T = Record<string, unknown>>(sql: string, params?: unknown[]): Promise<T[]> {
-  const db = await getDb();
-  const result = await db.query(sql, params ?? []);
-  return (result.rows ?? []) as T[];
-}
-
-export async function execute(sql: string, params?: unknown[]): Promise<void> {
-  const db = await getDb();
-  await db.query(sql, params ?? []);
-}
+export async function resetDatabase():Promise<void>{const db=await getDb();await db.exec('DELETE FROM tp_snapshots;');await db.exec('DELETE FROM tp_trades;');await db.exec('DELETE FROM tp_positions;');await db.exec(`UPDATE tp_account SET cash=10000.00,equity=10000.00,total_pnl=0.00,realized_pnl=0.00,bot_status='STOPPED',started_at=NULL,last_tick_at=NULL,risk_pause_until=NULL,max_strategies=10,max_allocation_pct=20.00,leverage=1.00,loss_limit_pct=2.00,fee_bps=10.00,slippage_bps=2.00;`);await db.exec(`UPDATE tp_validation_gate SET status='REJECTED',symbol='BTCUSDT',interval='5m',candles=0,test_return_pct=0,test_profit_factor=0,monte_carlo_loss_pct=100,generated_at=now() WHERE id=1;`);}
+export async function query<T=Record<string,unknown>>(sql:string,params?:unknown[]):Promise<T[]>{const db=await getDb();const result=await db.query(sql,params??[]);return(result.rows??[]) as T[];}
+export async function execute(sql:string,params?:unknown[]):Promise<void>{const db=await getDb();await db.query(sql,params??[]);}
+export type ValidationGateRecord={status:'VALIDATED'|'REJECTED';symbol:string;interval:string;candles:number;test_return_pct:number;test_profit_factor:number;monte_carlo_loss_pct:number;generated_at:string};
+export async function getValidationGate():Promise<ValidationGateRecord>{const rows=await query<ValidationGateRecord>(`SELECT status,symbol,interval,candles,test_return_pct, test_profit_factor, monte_carlo_loss_pct, generated_at FROM tp_validation_gate WHERE id=1;`);return rows[0]??{status:'REJECTED',symbol:'BTCUSDT',interval:'5m',candles:0,test_return_pct:0,test_profit_factor:0,monte_carlo_loss_pct:100,generated_at:new Date(0).toISOString()};}
+export async function setValidationGate(gate:{status:'VALIDATED'|'REJECTED';symbol:string;interval:string;candles:number;testReturnPct:number;testProfitFactor:number;monteCarloLossPct:number}):Promise<void>{await execute(`INSERT INTO tp_validation_gate(id,status,symbol,interval,candles,test_return_pct,test_profit_factor,monte_carlo_loss_pct,generated_at) VALUES(1,$1,$2,$3,$4,$5,$6,$7,now()) ON CONFLICT(id) DO UPDATE SET status=EXCLUDED.status,symbol=EXCLUDED.symbol,interval=EXCLUDED.interval,candles=EXCLUDED.candles,test_return_pct=EXCLUDED.test_return_pct,test_profit_factor=EXCLUDED.test_profit_factor,monte_carlo_loss_pct=EXCLUDED.monte_carlo_loss_pct,generated_at=EXCLUDED.generated_at;`,[gate.status,gate.symbol,gate.interval,gate.candles,gate.testReturnPct,gate.testProfitFactor,gate.monteCarloLossPct]);}
