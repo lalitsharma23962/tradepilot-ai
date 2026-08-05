@@ -147,32 +147,29 @@ const validationSelectionScore=(train:StrategyResult,validation:StrategyResult,f
  return train.score*0.2+validation.score*0.35+averageFoldScore*0.45+positiveFoldBonus-instabilityPenalty;
 };
 
-export async function runValidation(symbol='BTCUSDT',interval='5m',cfg:Partial<BacktestConfig>={}):Promise<ValidationReport>{
+export async function runValidation(symbol='BTCUSDT',interval='5m',cfg:Partial<BacktestConfig>={},forcedStrategyId?:string):Promise<ValidationReport>{
  const config={...DEFAULT_BACKTEST_CONFIG,...cfg,maxPositionPct:clamp(cfg.maxPositionPct??20,1,20),leverage:clamp(cfg.leverage??10,1,10),riskPerTradePct:clamp(cfg.riskPerTradePct??0.25,0.05,1)};
  const candles=await fetchHistoricalCandles(symbol,interval,20000);if(candles.length<MIN_HISTORY_BARS)throw new Error(`Validation requires at least ${MIN_HISTORY_BARS.toLocaleString()} completed historical candles; received ${candles.length.toLocaleString()}.`);
- // 30/20/50 split: selection is made from training plus two sequential validation folds;
- // the final 50% remains completely untouched until one strategy has been selected.
+ // 30/20/50 split: selection is made from training plus two sequential validation folds; the final 50% remains completely untouched until one strategy has been selected.
  const trainEnd=Math.floor(candles.length*.30),validationEnd=Math.floor(candles.length*.50),foldMid=Math.floor((trainEnd+validationEnd)/2);
  const trainResults=STRATEGIES.map(s=>simulateRange(candles,s.id,config,120,trainEnd));
  const eligibleTrain=trainResults.filter(r=>r.trades>=MIN_TRAIN_TRADES);
- const validationCandidates=eligibleTrain.map(train=>{
-  const validation=simulateRange(candles,train.id,config,trainEnd,validationEnd);
-  const foldA=simulateRange(candles,train.id,config,trainEnd,foldMid);
-  const foldB=simulateRange(candles,train.id,config,foldMid,validationEnd);
-  return{train,validation,foldA,foldB};
- }).filter(x=>x.validation.trades>=MIN_VALIDATION_TRADES&&x.foldA.trades>=MIN_FOLD_TRADES&&x.foldB.trades>=MIN_FOLD_TRADES);
+ const validationCandidates=eligibleTrain.map(train=>{const validation=simulateRange(candles,train.id,config,trainEnd,validationEnd),foldA=simulateRange(candles,train.id,config,trainEnd,foldMid),foldB=simulateRange(candles,train.id,config,foldMid,validationEnd);return{train,validation,foldA,foldB};}).filter(x=>x.validation.trades>=MIN_VALIDATION_TRADES&&x.foldA.trades>=MIN_FOLD_TRADES&&x.foldB.trades>=MIN_FOLD_TRADES);
  const stableCandidates=validationCandidates.filter(x=>x.validation.returnPct>0&&x.validation.profitFactor>=1.0&&x.foldA.returnPct>-1&&x.foldB.returnPct>-1);
  const pool=stableCandidates.length?stableCandidates:validationCandidates;
- const selectedCandidate=pool.slice().sort((a,b)=>validationSelectionScore(b.train,b.validation,b.foldA,b.foldB)-validationSelectionScore(a.train,a.validation,a.foldA,a.foldB))[0];
+ const forced=forcedStrategyId?pool.find(x=>x.train.id===forcedStrategyId):undefined;
+ const selectedCandidate=forced??pool.slice().sort((a,b)=>validationSelectionScore(b.train,b.validation,b.foldA,b.foldB)-validationSelectionScore(a.train,a.validation,a.foldA,a.foldB))[0];
  const selectedTrain=selectedCandidate?.train??eligibleTrain.slice().sort((a,b)=>b.score-a.score)[0]??trainResults.slice().sort((a,b)=>b.score-a.score)[0];
  const selectedId=selectedTrain?.id??'production';
  const validation=selectedCandidate?.validation??simulateRange(candles,selectedId,config,trainEnd,validationEnd);
  // IMPORTANT: this is the only time the selected strategy is evaluated on OOS data.
  const testResult=simulateRange(candles,selectedId,config,validationEnd,candles.length);
- const fullResults=trainResults.map(r=>r.id==='production'?simulateProductionRange(candles,config,120,candles.length):simulateRange(candles,r.id,config,120,candles.length)).sort((a,b)=>b.score-a.score);
+ // Only expose pre-OOS validation metrics in the strategy table. OOS is reserved for the selected strategy.
+ const selectionResults=validationCandidates.map(x=>x.validation).sort((a,b)=>b.score-a.score);
  const mc=monteCarlo(testResult.tradeReturnsPct),reasons:string[]=[];
  if(!validationCandidates.length)reasons.push('No strategy met the minimum multi-fold validation trade requirements before the OOS test.');
  if(!stableCandidates.length)reasons.push('No strategy passed the pre-OOS stability filter across both validation folds.');
+ if(forcedStrategyId&&!forced)reasons.push(`Selected strategy ${STRATEGIES.find(s=>s.id===forcedStrategyId)?.name??forcedStrategyId} did not meet the pre-OOS validation requirements.`);
  const quality=buildQuality(candles,interval);
  if(quality.gaps>Math.max(3,Math.floor(candles.length*.001)))reasons.push(`Historical data contains ${quality.gaps} interval gaps.`);
  if(quality.duplicateTimestamps>0)reasons.push(`Historical data contains ${quality.duplicateTimestamps} duplicate timestamps.`);
@@ -184,5 +181,5 @@ export async function runValidation(symbol='BTCUSDT',interval='5m',cfg:Partial<B
  if(testResult.maxDrawdownPct>MAX_TEST_DD)reasons.push(`Out-of-sample max drawdown ${testResult.maxDrawdownPct.toFixed(2)}% exceeds ${MAX_TEST_DD}%.`);
  if(mc.probabilityOfLoss>MAX_MC_LOSS)reasons.push(`Monte Carlo loss probability ${mc.probabilityOfLoss.toFixed(1)}% exceeds ${MAX_MC_LOSS}%.`);
  const gate:ValidationGate={status:reasons.length?'REJECTED':'VALIDATED',reasons,minimumTestTrades:MIN_TEST_TRADES,minimumProfitFactor:MIN_TEST_PF,minimumTestReturnPct:0,maximumTestDrawdownPct:MAX_TEST_DD,maximumMonteCarloLossProbability:MAX_MC_LOSS};
- return{symbol,interval,candles:candles.length,dataQuality:quality,costs:{feeBps:config.feeBps,slippageBps:config.slippageBps},strategies:fullResults,walkForward:{trainBars:trainEnd,validationBars:validationEnd-trainEnd,testBars:candles.length-validationEnd,selectedStrategy:selectedTrain.name,validation,test:testResult},monteCarlo:mc,gate,generatedAt:new Date().toISOString()};
+ return{symbol,interval,candles:candles.length,dataQuality:quality,costs:{feeBps:config.feeBps,slippageBps:config.slippageBps},strategies:selectionResults,walkForward:{trainBars:trainEnd,validationBars:validationEnd-trainEnd,testBars:candles.length-validationEnd,selectedStrategy:selectedTrain.name,validation,test:testResult},monteCarlo:mc,gate,generatedAt:new Date().toISOString()};
 }
