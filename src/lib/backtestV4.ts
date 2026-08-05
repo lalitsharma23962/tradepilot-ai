@@ -28,9 +28,6 @@ const z=(x:number[],n=40)=>{const s=x.slice(-n),m=mean(s),d=std(s);return d?(s[s
 
 function signal(id:string,c:Candle[],cfg:BacktestConfig):1|-1|0{
  if(c.length<150)return 0;
- // Keep the validator and live/paper engine on one source of truth for the
- // production strategy. The old V4 production branch duplicated the rules
- // and had already drifted from strategy.ts.
  if(id==='production'){
   const s=evaluateProductionStrategy(c.map(x=>x.close),{minScore:70,lookback:240,feeBps:cfg.feeBps,slippageBps:cfg.slippageBps});
   return s.action==='LONG'?1:s.action==='SHORT'?-1:0;
@@ -89,9 +86,11 @@ export async function runValidation(symbol='BTCUSDT',interval='5m',cfg:Partial<B
  const ms=intervalMs(interval),gaps=candles.slice(1).filter((x,i)=>x.openTime-candles[i].openTime!==ms).length,dup=candles.length-new Set(candles.map(x=>x.openTime)).size,duration=(candles[candles.length-1].openTime-candles[0].openTime)/86400000;
  const testStart=Math.floor(candles.length*.5),preOos=candles.slice(0,testStart),trainBars=Math.floor(preOos.length*.6),validationBars=preOos.length-trainBars,testBars=candles.length-testStart;
  const candidates=STRATEGIES.map(s=>s.id),foldsPerStrategy=new Map<string,StrategyResult[]>();
- for(const id of candidates){const folds:StrategyResult[]=[];const fold1Start=Math.floor(trainBars*.55),fold1End=trainBars;const fold2Start=Math.floor(trainBars*.7),fold2End=preOos.length;const windows=[[fold1Start,fold1End],[fold2Start,fold2End]];for(const [a,b] of windows){if(b-a<MIN_VAL)continue;folds.push(simulate(candles,id,config,a,b));}foldsPerStrategy.set(id,folds);}
+ for(const id of candidates){const folds:StrategyResult[]=[];const windows=[[Math.floor(trainBars*.45),Math.floor(trainBars*.7)],[Math.floor(trainBars*.55),Math.floor(trainBars*.85)],[Math.floor(trainBars*.7),preOos.length]];for(const [a,b] of windows){if(b-a<MIN_VAL)continue;folds.push(simulate(candles,id,config,a,b));}foldsPerStrategy.set(id,folds);}
  const ranked=STRATEGIES.map(s=>aggregateFolds(s.id,foldsPerStrategy.get(s.id)??[])).sort((a,b)=>b.score-a.score);
- const chosenId=selectedStrategyId&&candidates.includes(selectedStrategyId as any)?selectedStrategyId:ranked[0]?.id;
+ const stable=ranked.filter(r=>{const folds=foldsPerStrategy.get(r.id)??[];return folds.length>=3&&folds.every(f=>f.trades>=MIN_VAL&&f.returnPct>0&&f.profitFactor>=MIN_PF&&f.maxDrawdownPct<=MAX_DD);});
+ const stableIds=new Set(stable.map(r=>r.id));
+ const chosenId=selectedStrategyId&&stableIds.has(selectedStrategyId)?selectedStrategyId:stable[0]?.id??ranked[0]?.id;
  const selected=STRATEGIES.find(s=>s.id===chosenId)??STRATEGIES[0];
  const validation=aggregateFolds(selected.id,foldsPerStrategy.get(selected.id)??[]);
  const test=simulate(candles,selected.id,config,testStart,candles.length);
@@ -103,5 +102,5 @@ export async function runValidation(symbol='BTCUSDT',interval='5m',cfg:Partial<B
  if(test.maxDrawdownPct>MAX_DD)reasons.push(`Out-of-sample max drawdown ${test.maxDrawdownPct.toFixed(2)}% exceeds ${MAX_DD.toFixed(0)}%.`);
  if(monteCarlo.probabilityOfLoss>MAX_MC)reasons.push(`Monte Carlo loss probability ${monteCarlo.probabilityOfLoss.toFixed(1)}% exceeds ${MAX_MC.toFixed(0)}%.`);
  const gate:ValidationGate={status:reasons.length?'REJECTED':'VALIDATED',reasons,minimumTestTrades:MIN_TEST,minimumProfitFactor:MIN_PF,minimumTestReturnPct:0,maximumTestDrawdownPct:MAX_DD,maximumMonteCarloLossProbability:MAX_MC};
- return{symbol,interval,candles:candles.length,dataQuality:{startTime:candles[0].openTime,endTime:candles[candles.length-1].openTime,durationDays:duration,expectedIntervalMinutes:ms/60000,gaps,duplicateTimestamps:dup},costs:{feeBps:config.feeBps,slippageBps:config.slippageBps},strategies:ranked,walkForward:{trainBars,validationBars,testBars,selectedStrategy:selected.name,validation,test},monteCarlo,gate,generatedAt:new Date().toISOString(),research:{asOf:new Date().toISOString(),dataWindowBars:candles.length,selectionMethod:'Two-fold pre-OOS stability ranking; final 50% remains untouched OOS',coverage:['fees','slippage','walk-forward','multi-fold stability','Monte Carlo']}};
+ return{symbol,interval,candles:candles.length,dataQuality:{startTime:candles[0].openTime,endTime:candles[candles.length-1].openTime,durationDays:duration,expectedIntervalMinutes:ms/60000,gaps,duplicateTimestamps:dup},costs:{feeBps:config.feeBps,slippageBps:config.slippageBps},strategies:ranked,walkForward:{trainBars,validationBars,testBars,selectedStrategy:selected.name,validation,test},monteCarlo,gate,generatedAt:new Date().toISOString(),research:{asOf:new Date().toISOString(),dataWindowBars:candles.length,selectionMethod:'Three-fold pre-OOS stability filter; a candidate must be profitable with PF >= 1.05 in every pre-OOS fold before it can be auto-selected; final 50% remains untouched OOS',coverage:['fees','slippage','walk-forward','three-fold stability','Monte Carlo']}};
 }
