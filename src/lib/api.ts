@@ -6,7 +6,7 @@ import { runValidation, type BacktestConfig, type ValidationReport } from './bac
 export interface ApiResult<T>{ok:boolean;data?:T;error?:string;}
 async function wrap<T>(fn:()=>T|Promise<T>):Promise<ApiResult<T>>{try{return{ok:true,data:await fn()};}catch(err){const message=err instanceof Error?err.message:'Unknown error';console.error('[api] error:',message);return{ok:false,error:message};}}
 function normalizeValidationReport(report:ValidationReport):ValidationReport{
- const rename=(value:string)=>value.replace(/Production Breakout v5/g,'Production Breakout v9').replace(/Production Breakout v8/g,'Production Breakout v9');
+ const rename=(value:string)=>value.replace(/Production Breakout v5/g,'Production Breakout v10').replace(/Production Breakout v8/g,'Production Breakout v10').replace(/Production Breakout v9/g,'Production Breakout v10');
  return {...report,strategies:report.strategies.map(s=>({...s,name:rename(s.name)})),walkForward:{...report.walkForward,selectedStrategy:rename(report.walkForward.selectedStrategy)},gate:{...report.gate,reasons:report.gate.reasons.map(rename)}};
 }
 export async function health():Promise<ApiResult<{status:string;engine:boolean;ticks:number;db:string}>>{return wrap(()=>({status:'ok',engine:isEngineRunning(),ticks:getTickCount(),db:'pglite'}));}
