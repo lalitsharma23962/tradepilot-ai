@@ -31,17 +31,21 @@ const DEFAULT_CONFIG: StrategyConfig = {
   strategyLimit: 10,
 };
 
+// Every profile is calibrated to a 100-point scale. The previous weights
+// topped out at 82 points unless a rare compression condition added 8 more,
+// while the validation threshold was 85. That unintentionally made most
+// otherwise valid setups impossible to qualify.
 const PROFILES = [
-  { name: 'Trend Breakout', trend: 28, momentum: 20, trigger: 24, volatility: 10, extensionPenalty: 20 },
-  { name: 'Trend Pullback', trend: 30, momentum: 16, trigger: 22, volatility: 8, extensionPenalty: 16 },
-  { name: 'Momentum Continuation', trend: 22, momentum: 28, trigger: 18, volatility: 10, extensionPenalty: 18 },
-  { name: 'Volatility Expansion', trend: 20, momentum: 18, trigger: 24, volatility: 16, extensionPenalty: 16 },
-  { name: 'EMA Reclaim', trend: 26, momentum: 18, trigger: 24, volatility: 8, extensionPenalty: 18 },
-  { name: 'Range Break', trend: 20, momentum: 18, trigger: 28, volatility: 12, extensionPenalty: 20 },
-  { name: 'Compression Break', trend: 20, momentum: 20, trigger: 24, volatility: 16, extensionPenalty: 18 },
-  { name: 'Structure Continuation', trend: 30, momentum: 22, trigger: 20, volatility: 8, extensionPenalty: 20 },
-  { name: 'Adaptive Trend', trend: 24, momentum: 22, trigger: 22, volatility: 12, extensionPenalty: 18 },
-  { name: 'Defensive Momentum', trend: 28, momentum: 24, trigger: 18, volatility: 6, extensionPenalty: 22 },
+  { name: 'Trend Breakout', trend: 30, momentum: 20, trigger: 32, volatility: 18, extensionPenalty: 16 },
+  { name: 'Trend Pullback', trend: 32, momentum: 18, trigger: 30, volatility: 20, extensionPenalty: 15 },
+  { name: 'Momentum Continuation', trend: 24, momentum: 30, trigger: 28, volatility: 18, extensionPenalty: 17 },
+  { name: 'Volatility Expansion', trend: 20, momentum: 20, trigger: 30, volatility: 30, extensionPenalty: 15 },
+  { name: 'EMA Reclaim', trend: 30, momentum: 18, trigger: 32, volatility: 20, extensionPenalty: 16 },
+  { name: 'Range Break', trend: 22, momentum: 20, trigger: 34, volatility: 24, extensionPenalty: 18 },
+  { name: 'Compression Break', trend: 20, momentum: 22, trigger: 32, volatility: 26, extensionPenalty: 16 },
+  { name: 'Structure Continuation', trend: 32, momentum: 22, trigger: 28, volatility: 18, extensionPenalty: 18 },
+  { name: 'Adaptive Trend', trend: 26, momentum: 24, trigger: 30, volatility: 20, extensionPenalty: 17 },
+  { name: 'Defensive Momentum', trend: 30, momentum: 26, trigger: 26, volatility: 18, extensionPenalty: 20 },
 ] as const;
 
 function ema(values: number[], period: number): number {
