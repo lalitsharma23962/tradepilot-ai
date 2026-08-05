@@ -1,11 +1,8 @@
 // Shared domain types for the TradePilot AI paper-trading engine.
 
-export type BotStatus = 'STOPPED' | 'RUNNING';
-
+export type BotStatus = 'STOPPED' | 'RUNNING' | 'PAUSED';
 export type Side = 'LONG' | 'SHORT';
-
 export type RiskLevel = 'Conservative' | 'Balanced' | 'Aggressive';
-
 export type ThemeMode = 'Dark' | 'Light' | 'System';
 
 export interface Account {
@@ -17,13 +14,20 @@ export interface Account {
   bot_status: BotStatus;
   started_at: string | null;
   last_tick_at: string | null;
+  pause_until: string | null;
+  pause_reason: string | null;
   max_positions: number;
+  max_strategies: number;
+  max_leverage: number;
   max_allocation_pct: number;
   default_allocation_pct: number;
   stop_loss_pct: number;
   take_profit_pct: number;
   confidence_threshold_pct: number;
   leverage: number;
+  loss_limit_pct: number;
+  loss_pause_hours: number;
+  capital_mode: 'UNLIMITED';
   risk_level: RiskLevel;
   theme: ThemeMode;
   trade_alerts: boolean;
@@ -110,11 +114,18 @@ export interface AiRecommendation {
 
 export interface Settings {
   risk_level: RiskLevel;
+  max_positions: number;
+  max_strategies: number;
+  max_leverage: number;
   max_allocation_pct: number;
   default_allocation_pct: number;
   stop_loss_pct: number;
   take_profit_pct: number;
   confidence_threshold_pct: number;
+  loss_limit_pct: number;
+  loss_pause_hours: number;
+  capital_mode: 'UNLIMITED';
+  leverage: number;
   theme: ThemeMode;
   trade_alerts: boolean;
   pnl_alerts: boolean;
