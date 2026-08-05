@@ -18,9 +18,9 @@ const SYMBOLS = [
 ];
 
 const STRATEGY = {
-  minScore: 90,
-  minRiskReward: 10,
-  maxRiskReward: 15,
+  minScore: 75,
+  minRiskReward: 4,
+  maxRiskReward: 8,
   atrStopMultiple: 1.0,
   lookback: 180,
   maxConsecutiveLosses: 2,
@@ -51,7 +51,7 @@ interface PriceState {
 function mulberry32(seed: number) {
   return function () {
     seed |= 0;
-    seed = (seed + 0x6d2b79f5) | 0;
+    seed = (seed + 0x6d2b79f7) | 0;
     let t = Math.imul(seed ^ (seed >>> 15), 1 | seed);
     t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t;
     return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
@@ -168,7 +168,7 @@ export async function startEngine(): Promise<{ ok: boolean; message: string }> {
   tickTimer = setInterval(tick, 2000);
   snapshotTimer = setInterval(takeSnapshot, 10000);
   setTimeout(tick, 100);
-  return { ok: true, message: 'Selective v4 paper bot started. Confidence threshold is configurable in Settings; 10R-15R potential required.' };
+  return { ok: true, message: 'Selective v4 paper bot started. Confidence threshold is configurable in Settings; 4R-8R potential required.' };
 }
 
 export async function stopEngine(): Promise<{ ok: boolean; message: string }> {
@@ -374,7 +374,7 @@ export async function resetAccount(): Promise<{ ok: boolean; message: string }> 
 export async function getAiRecommendation(symbol?: string): Promise<AiRecommendation> {
   seedPriceStates();
   const state = symbol ? priceStates.get(symbol) : priceStates.get('BTC/USDT');
-  if (!state) return { symbol: symbol ?? 'BTC/USDT', action: 'WAIT', confidence: 0, threshold: 90, entry: 0, stop_loss: 0, take_profit: 0, risk_score: 100, explanation: 'No market data available.' };
+  if (!state) return { symbol: symbol ?? 'BTC/USDT', action: 'WAIT', confidence: 0, threshold: 75, entry: 0, stop_loss: 0, take_profit: 0, risk_score: 100, explanation: 'No market data available.' };
   const account = await getAccount();
   const threshold = clampScore(account.confidence_threshold_pct);
   const signal = evaluateStrategy(state.history.map((x) => x.price), { ...STRATEGY, minScore: threshold });
