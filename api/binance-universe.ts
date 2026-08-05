@@ -17,7 +17,7 @@ export default async function handler(req:any,res:any){
       return respond(res,{ok:true,klines:await r.json()});
     }
     const [info,ticker]=await Promise.all([
-      fetch(`${BINANCE_BASE}/exchangeInfo?permissions=SPOT&symbolStatus=TRADING`,{headers:{accept:'application/json'}}),
+      fetch(`${BINANCE_BASE}/exchangeInfo`,{headers:{accept:'application/json'}}),
       fetch(`${BINANCE_BASE}/ticker/24hr`,{headers:{accept:'application/json'}}),
     ]);
     if(!info.ok||!ticker.ok)throw new Error(`Binance market metadata request failed (${info.status}/${ticker.status}).`);
@@ -25,7 +25,12 @@ export default async function handler(req:any,res:any){
     const tickers=await ticker.json() as any[];
     const bySymbol=new Map(tickers.map(t=>[String(t.symbol),t]));
     const symbols=(infoJson.symbols??[])
-      .filter((s:any)=>s.status==='TRADING'&&(s.permissions?.includes('SPOT')??s.isSpotTradingAllowed!==false))
+      .filter((s:any)=>{
+        if(s.status!=='TRADING')return false;
+        if(s.isSpotTradingAllowed===true)return true;
+        if(Array.isArray(s.permissions))return s.permissions.includes('SPOT');
+        return s.isSpotTradingAllowed!==false;
+      })
       .map((s:any)=>{const t=bySymbol.get(String(s.symbol));return{
         symbol:String(s.symbol),baseAsset:String(s.baseAsset),quoteAsset:String(s.quoteAsset),
         price:Number(t?.lastPrice??0),changePct:Number(t?.priceChangePercent??0),
