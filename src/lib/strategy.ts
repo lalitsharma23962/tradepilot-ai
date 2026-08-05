@@ -22,9 +22,9 @@ export interface StrategyConfig {
 }
 
 const DEFAULT_CONFIG: StrategyConfig = {
-  minScore: 90,
-  minRiskReward: 10,
-  maxRiskReward: 15,
+  minScore: 75,
+  minRiskReward: 4,
+  maxRiskReward: 8,
   atrStopMultiple: 1.0,
   lookback: 180,
 };
@@ -87,8 +87,9 @@ function clamp(value: number, min: number, max: number): number {
  * Selective paper-trading model.
  *
  * This is intentionally a filter, not a prediction oracle. There is no
- * mathematically valid "100% sure" market trade. A 10R-15R target is only
- * accepted when the observed series itself provides enough projected room.
+ * mathematically valid "100% sure" market trade. The model now accepts a
+ * defensible 4R-8R projected move so the paper engine can produce enough
+ * qualified setups to evaluate the strategy over a meaningful session.
  */
 export function evaluateStrategy(prices: number[], config: Partial<StrategyConfig> = {}): StrategySignal {
   const cfg = { ...DEFAULT_CONFIG, ...config };
