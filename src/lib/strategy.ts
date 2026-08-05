@@ -10,7 +10,7 @@ const slope=(x:number[])=>{if(x.length<2)return 0;const n=x.length,xm=(n-1)/2,ym
 const clamp=(v:number,a:number,b:number)=>Math.max(a,Math.min(b,v));
 const wait=(entry:number,reasons:string[],score=0):StrategySignal=>({action:'WAIT',score:Math.round(clamp(score,0,100)),confidence:Math.round(clamp(score,0,100)),strategy:'No Trade',entry,stopLoss:entry,takeProfit:entry,riskReward:0,reasons});
 function production(prices:number[],cfg:StrategyConfig):StrategySignal{
- const p=prices.filter(Number.isFinite).filter(v=>v>0).slice(-cfg.lookback),entry=p.at(-1)??0;
+ const p=prices.filter(Number.isFinite).filter(v=>v>0).slice(-cfg.lookback),entry=p[p.length-1]??0;
  if(p.length<120||!entry)return wait(entry,['Not enough history']);
  const e20=ema(p,20),e50=ema(p,50),e100=ema(p,100),a=atr(p),vol=a/entry,rrsi=rsi(p),m12=slope(p.slice(-12))/entry,m6=slope(p.slice(-6))/entry;
  const prior=p.slice(0,-1),h20=Math.max(...prior.slice(-20)),l20=Math.min(...prior.slice(-20));
