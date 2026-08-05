@@ -7,7 +7,7 @@ import { Badge, Button, Card, CardBody, CardHeader, EmptyState, LoadingState, St
 import { fmtMoney, fmtNum, fmtTime } from '@/lib/format';
 
 export function AnalyticsPage() {
-  const { conn, performance, snapshots } = useApp();
+  const { conn, performance, snapshots, account } = useApp();
   const [report, setReport] = useState<ValidationReport | null>(null);
   const [running, setRunning] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -15,18 +15,22 @@ export function AnalyticsPage() {
   const runValidation = async () => {
     setRunning(true); setError(null);
     try {
-      const res=await api.validationApi('BTCUSDT','5m',{initialCapital:10000,feeBps:10,slippageBps:2,maxPositionPct:20,leverage:10});
+      const riskPerTradePct=account?.risk_level==='Conservative'?0.15:account?.risk_level==='Aggressive'?0.35:0.25;
+      const leverage=Math.max(1,Math.min(10,Number(account?.leverage??1)));
+      const maxPositionPct=Math.max(1,Math.min(20,Number(account?.max_allocation_pct??20)));
+      const res=await api.validationApi('BTCUSDT','5m',{initialCapital:10000,feeBps:Number(account?.fee_bps??10),slippageBps:Number(account?.slippage_bps??2),maxPositionPct,leverage,riskPerTradePct});
       if(res.ok) setReport(res.data ?? null); else setError(res.error ?? 'Validation failed.');
     } finally { setRunning(false); }
   };
   if (conn==='loading'&&!performance) return <div className="p-6"><LoadingState message="Loading analytics…"/></div>;
+  const displayedLeverage=Math.max(1,Math.min(10,Number(account?.leverage??1)));
   return <div className="space-y-6 p-6">
     {performance ? <><div className="grid grid-cols-2 gap-4 lg:grid-cols-3 xl:grid-cols-6"><StatCard label="Equity" value={fmtMoney(performance.equity)} tone="accent"/><StatCard label="Total PnL" value={fmtMoney(performance.total_pnl)} tone={performance.total_pnl>=0?'positive':'negative'}/><StatCard label="Win Rate" value={`${fmtNum(performance.win_rate,1)}%`}/><StatCard label="Wins" value={String(performance.wins)} tone="positive"/><StatCard label="Losses" value={String(performance.losses)} tone="negative"/><StatCard label="Trade Count" value={String(performance.trade_count)}/></div>
     <div className="grid grid-cols-2 gap-4 lg:grid-cols-4"><StatCard label="Best Trade" value={fmtMoney(performance.best_trade)} tone="positive"/><StatCard label="Worst Trade" value={fmtMoney(performance.worst_trade)} tone="negative"/><StatCard label="Avg Trade" value={fmtMoney(performance.avg_trade)} tone={performance.avg_trade>=0?'positive':'negative'}/><StatCard label="Max Drawdown" value={fmtMoney(performance.max_drawdown)} tone="negative"/></div>
     <Card><CardHeader title="Paper Equity Curve" subtitle="Cost-aware paper-trading equity" action={<Badge tone="accent">PAPER</Badge>}/><CardBody>{equityCurve.length<2?<EmptyState title="Not enough history yet" message="Start the paper engine to build snapshots."/>:<ResponsiveContainer width="100%" height={320}><AreaChart data={equityCurve}><defs><linearGradient id="anGrad" x1="0" y1="0" x2="0" y2="1"><stop offset="5%" stopColor="#10b981" stopOpacity={0.4}/><stop offset="95%" stopColor="#10b981" stopOpacity={0}/></linearGradient></defs><CartesianGrid strokeDasharray="3 3" stroke="#1e293b"/><XAxis dataKey="ts" tick={{fontSize:10,fill:'#64748b'}}/><YAxis tick={{fontSize:10,fill:'#64748b'}} domain={['auto','auto']}/><Tooltip/><Area type="monotone" dataKey="equity" stroke="#10b981" strokeWidth={2} fill="url(#anGrad)"/></AreaChart></ResponsiveContainer>}</CardBody></Card></> : <EmptyState title="No paper results yet" message="Run the historical validation first; paper results will appear after the engine trades."/>}
 
-    <Card><CardHeader title="Historical Validation Lab" subtitle="20,000 real Binance candles → fees + slippage → 10 strategies → walk-forward → Monte Carlo" action={<Button onClick={runValidation} disabled={running}>{running?'Running…':'Run validation'}</Button>}/><CardBody className="space-y-4">
-      <div className="grid grid-cols-2 gap-3 sm:grid-cols-5"><div className="rounded-lg bg-slate-800/40 p-3"><p className="text-[11px] text-slate-500">Data</p><p className="text-sm font-semibold">BTCUSDT · 5m</p></div><div className="rounded-lg bg-slate-800/40 p-3"><p className="text-[11px] text-slate-500">Strategies</p><p className="text-sm font-semibold">10 max</p></div><div className="rounded-lg bg-slate-800/40 p-3"><p className="text-[11px] text-slate-500">Fee</p><p className="text-sm font-semibold">10 bps/side</p></div><div className="rounded-lg bg-slate-800/40 p-3"><p className="text-[11px] text-slate-500">Slippage</p><p className="text-sm font-semibold">2 bps/side</p></div><div className="rounded-lg bg-slate-800/40 p-3"><p className="text-[11px] text-slate-500">Leverage</p><p className="text-sm font-semibold">≤10x</p></div></div>
+    <Card><CardHeader title="Historical Validation Lab" subtitle="20,000 real Binance candles → fees + slippage → strict production strategy → walk-forward → Monte Carlo" action={<Button onClick={runValidation} disabled={running}>{running?'Running…':'Run validation'}</Button>}/><CardBody className="space-y-4">
+      <div className="grid grid-cols-2 gap-3 sm:grid-cols-5"><div className="rounded-lg bg-slate-800/40 p-3"><p className="text-[11px] text-slate-500">Data</p><p className="text-sm font-semibold">BTCUSDT · 5m</p></div><div className="rounded-lg bg-slate-800/40 p-3"><p className="text-[11px] text-slate-500">Production</p><p className="text-sm font-semibold">Breakout v5</p></div><div className="rounded-lg bg-slate-800/40 p-3"><p className="text-[11px] text-slate-500">Fee</p><p className="text-sm font-semibold">{Number(account?.fee_bps??10)} bps/side</p></div><div className="rounded-lg bg-slate-800/40 p-3"><p className="text-[11px] text-slate-500">Slippage</p><p className="text-sm font-semibold">{Number(account?.slippage_bps??2)} bps/side</p></div><div className="rounded-lg bg-slate-800/40 p-3"><p className="text-[11px] text-slate-500">Leverage</p><p className="text-sm font-semibold">≤{displayedLeverage}x</p></div></div>
       {error&&<div className="rounded-lg bg-red-950/40 px-3 py-2 text-xs text-red-300">{error}</div>}
       {report&&<>
         <div className={`rounded-lg border px-4 py-3 ${report.gate.status==='VALIDATED'?'border-emerald-800 bg-emerald-950/30':'border-red-800 bg-red-950/30'}`}>
