@@ -5,7 +5,7 @@ import { runValidation, type BacktestConfig, type ValidationReport } from './bac
 export interface ApiResult<T>{ok:boolean;data?:T;error?:string;}
 async function wrap<T>(fn:()=>T|Promise<T>):Promise<ApiResult<T>>{try{return{ok:true,data:await fn()};}catch(err){const message=err instanceof Error?err.message:'Unknown error';console.error('[api] error:',message);return{ok:false,error:message};}}
 function normalizeValidationReport(report:ValidationReport):ValidationReport{
- const rename=(value:string)=>value.replaceAll('Production Breakout v5','Production Breakout v8');
+ const rename=(value:string)=>value.replace(/Production Breakout v5/g,'Production Breakout v8');
  return {...report,strategies:report.strategies.map(s=>({...s,name:rename(s.name)})),walkForward:{...report.walkForward,selectedStrategy:rename(report.walkForward.selectedStrategy)},gate:{...report.gate,reasons:report.gate.reasons.map(rename)}};
 }
 export async function health():Promise<ApiResult<{status:string;engine:boolean;ticks:number;db:string}>>{return wrap(()=>({status:'ok',engine:isEngineRunning(),ticks:getTickCount(),db:'pglite'}));}
@@ -18,12 +18,3 @@ export async function portfolio():Promise<ApiResult<{cash:number;equity:number;t
 export async function positions():Promise<ApiResult<import('./types').Position[]>>{return wrap(()=>getPositions());}
 export async function trades():Promise<ApiResult<import('./types').Trade[]>>{return wrap(()=>getTrades(500));}
 export async function performance():Promise<ApiResult<import('./types').Performance>>{return wrap(()=>getPerformance());}
-export async function snapshots():Promise<ApiResult<import('./types').Snapshot[]>>{return wrap(()=>getSnapshots(500));}
-export async function market():Promise<ApiResult<import('./types').MarketTick[]>>{return wrap(()=>getMarketTicks());}
-export async function aiRecommendation(symbol?:string):Promise<ApiResult<import('./types').AiRecommendation>>{return wrap(()=>getAiRecommendation(symbol));}
-export async function closePositionApi(id:string):Promise<ApiResult<{message:string}>>{return wrap(async()=>{const r=await closePosition(id);if(!r.ok)throw new Error(r.message);return{message:r.message};});}
-export async function closeAllApi():Promise<ApiResult<{message:string}>>{return wrap(async()=>{const r=await closeAllPositions();if(!r.ok)throw new Error(r.message);return{message:r.message};});}
-export async function resetApi():Promise<ApiResult<{message:string}>>{return wrap(async()=>{const r=await resetAccount();if(!r.ok)throw new Error(r.message);return{message:r.message};});}
-export async function getSettingsApi():Promise<ApiResult<import('./types').Settings>>{return wrap(()=>getSettings());}
-export async function updateSettingsApi(s:Partial<import('./types').Settings>):Promise<ApiResult<import('./types').Settings>>{return wrap(async()=>{if(isEngineRunning())await stopEngine();const next=await updateSettings(s);await setValidationGate({status:'REJECTED',symbol:'BTCUSDT',interval:'5m',candles:0,testReturnPct:0,testProfitFactor:0,monteCarloLossPct:100});return next;});}
-export async function validationApi(symbol='BTCUSDT',interval='5m',config?:Partial<BacktestConfig>):Promise<ApiResult<ValidationReport>>{return wrap(async()=>{if(isEngineRunning())await stopEngine();await setValidationGate({status:'REJECTED',symbol,interval,candles:0,testReturnPct:0,testProfitFactor:0,monteCarloLossPct:100});const raw=await runValidation(symbol,interval,config);const report=normalizeValidationReport(raw);await setValidationGate({status:report.gate.status,symbol:report.symbol,interval:report.interval,candles:report.candles,testReturnPct:report.walkForward.test?.returnPct??0,testProfitFactor:report.walkForward.test?.profitFactor??0,monteCarloLossPct:report.monteCarlo.probabilityOfLoss});return report;});}
