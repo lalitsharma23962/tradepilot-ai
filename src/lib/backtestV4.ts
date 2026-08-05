@@ -7,7 +7,7 @@ export type ValidationGate={status:'VALIDATED'|'REJECTED';reasons:string[];minim
 export type ValidationReport={symbol:string;interval:string;candles:number;dataQuality:{startTime:number;endTime:number;durationDays:number;expectedIntervalMinutes:number;gaps:number;duplicateTimestamps:number};costs:{feeBps:number;slippageBps:number};strategies:StrategyResult[];walkForward:{trainBars:number;validationBars:number;testBars:number;selectedStrategy:string;validation:StrategyResult|null;test:StrategyResult|null};monteCarlo:{simulations:number;probabilityOfLoss:number;medianReturnPct:number;p05ReturnPct:number;p95MaxDrawdownPct:number};gate:ValidationGate;generatedAt:string;research:{asOf:string;dataWindowBars:number;selectionMethod:string;coverage:string[]}};
 
 export const MAX_STRATEGIES=17,MAX_HISTORY_BARS=40000;
-export const DEFAULT_BACKTEST_CONFIG:BacktestConfig={initialCapital:10000,feeBps:10,slippageBps:2,riskPerTradePct:0.25,maxPositionPct:20,leverage:10,stopAtr:1.25,rewardRisk:1.8,maxBarsInTrade:48};
+export const DEFAULT_BACKTEST_CONFIG:BacktestConfig={initialCapital:10000,feeBps:10,slippageBps:2,riskPerTradePct:0.25,maxPositionPct:20,leverage:10,stopAtr:3,rewardRisk:1.8,maxBarsInTrade:48};
 export const STRATEGIES=[
  {id:'production',name:'Production Regime Breakout v13'},{id:'ema-trend',name:'EMA Trend + Momentum'},
  {id:'breakout-20',name:'Donchian Breakout 20'},{id:'breakout-55',name:'Donchian Breakout 55'},{id:'pullback',name:'EMA Pullback'},
@@ -67,8 +67,12 @@ function summarize(id:string,pnls:number[],initial:number,dd:number,tr:number[])
 function closePnl(raw:number,p:{side:1|-1;entry:number;qty:number},fee:number,slip:number){const exit=raw*(1-p.side*slip),gross=p.side*(exit-p.entry)*p.qty,fees=(Math.abs(p.entry*p.qty)+Math.abs(exit*p.qty))*fee;return gross-fees;}
 function simulate(c:Candle[],id:string,cfg:BacktestConfig,start:number,end:number):StrategyResult{
  let equity=cfg.initialCapital,peak=equity,maxDd=0;const pnls:number[]=[],tr:number[]=[];let open:{side:1|-1;entry:number;stop:number;target:number;qty:number;bars:number}|null=null;const fee=cfg.feeBps/10000,slip=cfg.slippageBps/10000;
+ const roundTripPct=2*fee+2*slip;
+ const MIN_R_OVER_COST=4;
  for(let i=Math.max(150,start);i<end;i++){const bar=c[i];let closed=false;if(open){open.bars++;const stop=open.side===1?bar.low<=open.stop:bar.high>=open.stop,tp=open.side===1?bar.high>=open.target:bar.low<=open.target;if(stop||tp||open.bars>=cfg.maxBarsInTrade){const raw=stop?open.stop:tp?open.target:bar.close,pnl=closePnl(raw,open,fee,slip);tr.push(equity?100*pnl/equity:0);pnls.push(pnl);equity+=pnl;open=null;closed=true;}}
-  if(!open&&!closed){const w=c.slice(Math.max(0,i-LOOKBACK),i),side=signal(id,w,cfg);if(side){const entry=bar.open*(1+side*slip),risk=Math.max(atr(w)*cfg.stopAtr,entry*.0015),rr=id==='production'?1.8:cfg.rewardRisk,stop=entry-side*risk,target=entry+side*risk*rr,riskBudget=Math.max(0,equity)*cfg.riskPerTradePct/100,riskQty=riskBudget/risk,maxNotional=Math.max(0,equity)*cfg.maxPositionPct/100*Math.max(1,cfg.leverage),qty=Math.min(riskQty,maxNotional/entry);if(qty>0)open={side,entry,stop,target,qty,bars:0};}}
+  if(!open&&!closed){const w=c.slice(Math.max(0,i-LOOKBACK),i),side=signal(id,w,cfg);if(side){const entry=bar.open*(1+side*slip),risk=Math.max(atr(w)*cfg.stopAtr,entry*roundTripPct*MIN_R_OVER_COST),rr=id==='production'?1.8:cfg.rewardRisk,stop=entry-side*risk,target=entry+side*(risk*rr+entry*roundTripPct),riskBudget=Math.max(0,equity)*cfg.riskPerTradePct/100,riskQty=riskBudget/risk,maxNotional=Math.max(0,equity)*cfg.maxPositionPct/100*Math.max(1,cfg.leverage),requestedNotional=riskQty*entry;
+    if(requestedNotional<=maxNotional){const qty=riskQty;if(qty>0)open={side,entry,stop,target,qty,bars:0};}
+  }}
   peak=Math.max(peak,equity);maxDd=Math.max(maxDd,peak?(peak-equity)/peak*100:0);
  }
  if(open){const pnl=closePnl(c[end-1].close,open,fee,slip);tr.push(equity?100*pnl/equity:0);pnls.push(pnl);equity+=pnl;}return summarize(id,pnls,cfg.initialCapital,maxDd,tr);
