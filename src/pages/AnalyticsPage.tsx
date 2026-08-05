@@ -1,95 +1,28 @@
-import { useMemo } from 'react';
+import { useMemo, useState } from 'react';
 import { Area, AreaChart, CartesianGrid, ResponsiveContainer, Tooltip, XAxis, YAxis } from 'recharts';
 import { useApp } from '@/lib/store';
-import { Badge, Card, CardBody, CardHeader, EmptyState, LoadingState, StatCard } from '@/components/ui';
-import { fmtMoney, fmtNum, fmtTime, pnlClass } from '@/lib/format';
+import * as api from '@/lib/api';
+import type { ValidationReport } from '@/lib/backtest';
+import { Badge, Button, Card, CardBody, CardHeader, EmptyState, LoadingState, StatCard } from '@/components/ui';
+import { fmtMoney, fmtNum, fmtTime } from '@/lib/format';
 
 export function AnalyticsPage() {
   const { conn, performance, snapshots } = useApp();
+  const [report, setReport] = useState<ValidationReport | null>(null), [running, setRunning] = useState(false), [error, setError] = useState<string | null>(null);
+  const equityCurve = useMemo(() => snapshots.map((s,i)=>({idx:i,equity:s.equity,ts:fmtTime(s.ts)})), [snapshots]);
+  const runValidation = async () => { setRunning(true); setError(null); const res=await api.validationApi('BTCUSDT','5m',{initialCapital:10000,feeBps:10,slippageBps:2,maxPositionPct:20,leverage:10}); if(res.ok) setReport(res.data ?? null); else setError(res.error ?? 'Validation failed.'); setRunning(false); };
+  if (conn==='loading'&&!performance) return <div className="p-6"><LoadingState message="Loading analytics…"/></div>;
+  return <div className="space-y-6 p-6">
+    {performance ? <><div className="grid grid-cols-2 gap-4 lg:grid-cols-3 xl:grid-cols-6"><StatCard label="Equity" value={fmtMoney(performance.equity)} tone="accent"/><StatCard label="Total PnL" value={fmtMoney(performance.total_pnl)} tone={performance.total_pnl>=0?'positive':'negative'}/><StatCard label="Win Rate" value={`${fmtNum(performance.win_rate,1)}%`}/><StatCard label="Wins" value={String(performance.wins)} tone="positive"/><StatCard label="Losses" value={String(performance.losses)} tone="negative"/><StatCard label="Trade Count" value={String(performance.trade_count)}/></div>
+    <div className="grid grid-cols-2 gap-4 lg:grid-cols-4"><StatCard label="Best Trade" value={fmtMoney(performance.best_trade)} tone="positive"/><StatCard label="Worst Trade" value={fmtMoney(performance.worst_trade)} tone="negative"/><StatCard label="Avg Trade" value={fmtMoney(performance.avg_trade)} tone={performance.avg_trade>=0?'positive':'negative'}/><StatCard label="Max Drawdown" value={fmtMoney(performance.max_drawdown)} tone="negative"/></div>
+    <Card><CardHeader title="Paper Equity Curve" subtitle="Cost-aware paper-trading equity" action={<Badge tone="accent">PAPER</Badge>}/><CardBody>{equityCurve.length<2?<EmptyState title="Not enough history yet" message="Start the paper engine to build snapshots."/>:<ResponsiveContainer width="100%" height={320}><AreaChart data={equityCurve}><defs><linearGradient id="anGrad" x1="0" y1="0" x2="0" y2="1"><stop offset="5%" stopColor="#10b981" stopOpacity={0.4}/><stop offset="95%" stopColor="#10b981" stopOpacity={0}/></linearGradient></defs><CartesianGrid strokeDasharray="3 3" stroke="#1e293b"/><XAxis dataKey="ts" tick={{fontSize:10,fill:'#64748b'}}/><YAxis tick={{fontSize:10,fill:'#64748b'}} domain={['auto','auto']}/><Tooltip/><Area type="monotone" dataKey="equity" stroke="#10b981" strokeWidth={2} fill="url(#anGrad)"/></AreaChart></ResponsiveContainer>}</CardBody></Card></> : <EmptyState title="No paper results yet" message="Run the historical validation first; paper results will appear after the engine trades."/>}
 
-  const equityCurve = useMemo(
-    () => snapshots.map((s, i) => ({ idx: i, equity: s.equity, ts: fmtTime(s.ts) })),
-    [snapshots]
-  );
-
-  if (conn === 'loading' && !performance) {
-    return <div className="p-6"><LoadingState message="Loading analytics…" /></div>;
-  }
-
-  if (!performance) {
-    return <div className="p-6"><EmptyState title="No analytics yet" message="Start the bot to generate performance data." /></div>;
-  }
-
-  return (
-    <div className="space-y-6 p-6">
-      <div className="grid grid-cols-2 gap-4 lg:grid-cols-3 xl:grid-cols-6">
-        <StatCard label="Equity" value={fmtMoney(performance.equity)} tone="accent" />
-        <StatCard label="Total PnL" value={fmtMoney(performance.total_pnl)} tone={performance.total_pnl >= 0 ? 'positive' : 'negative'} />
-        <StatCard label="Win Rate" value={`${fmtNum(performance.win_rate, 1)}%`} />
-        <StatCard label="Wins" value={String(performance.wins)} tone="positive" />
-        <StatCard label="Losses" value={String(performance.losses)} tone="negative" />
-        <StatCard label="Trade Count" value={String(performance.trade_count)} />
-      </div>
-
-      <div className="grid grid-cols-2 gap-4 lg:grid-cols-4">
-        <StatCard label="Best Trade" value={fmtMoney(performance.best_trade)} tone="positive" />
-        <StatCard label="Worst Trade" value={fmtMoney(performance.worst_trade)} tone="negative" />
-        <StatCard label="Avg Trade" value={fmtMoney(performance.avg_trade)} tone={performance.avg_trade >= 0 ? 'positive' : 'negative'} />
-        <StatCard label="Max Drawdown" value={fmtMoney(performance.max_drawdown)} tone="negative" />
-      </div>
-
-      <Card>
-        <CardHeader title="Equity Curve" subtitle="Actual paper-trading equity snapshots" action={<Badge tone="accent">PAPER</Badge>} />
-        <CardBody>
-          {equityCurve.length < 2 ? (
-            <EmptyState title="Not enough history yet" message="The equity curve builds up as the bot runs. If there's no data, a historical mock is shown below." />
-          ) : (
-            <ResponsiveContainer width="100%" height={320}>
-              <AreaChart data={equityCurve}>
-                <defs>
-                  <linearGradient id="anGrad" x1="0" y1="0" x2="0" y2="1">
-                    <stop offset="5%" stopColor="#10b981" stopOpacity={0.4} />
-                    <stop offset="95%" stopColor="#10b981" stopOpacity={0} />
-                  </linearGradient>
-                </defs>
-                <CartesianGrid strokeDasharray="3 3" stroke="#1e293b" />
-                <XAxis dataKey="ts" tick={{ fontSize: 10, fill: '#64748b' }} />
-                <YAxis tick={{ fontSize: 10, fill: '#64748b' }} domain={['auto', 'auto']} />
-                <Tooltip contentStyle={{ background: '#0f172a', border: '1px solid #1e293b', borderRadius: 8, fontSize: 12 }} labelStyle={{ color: '#94a3b8' }} />
-                <Area type="monotone" dataKey="equity" stroke="#10b981" strokeWidth={2} fill="url(#anGrad)" />
-              </AreaChart>
-            </ResponsiveContainer>
-          )}
-        </CardBody>
-      </Card>
-
-      <Card>
-        <CardHeader title="Historical Mock Equity Curve" subtitle="Illustrative only — not real trading results" action={<Badge tone="warning">HISTORICAL MOCK</Badge>} />
-        <CardBody>
-          <ResponsiveContainer width="100%" height={200}>
-            <AreaChart data={mockEquity}>
-              <defs>
-                <linearGradient id="mockGrad" x1="0" y1="0" x2="0" y2="1">
-                  <stop offset="5%" stopColor="#64748b" stopOpacity={0.3} />
-                  <stop offset="95%" stopColor="#64748b" stopOpacity={0} />
-                </linearGradient>
-              </defs>
-              <CartesianGrid strokeDasharray="3 3" stroke="#1e293b" />
-              <XAxis dataKey="d" tick={{ fontSize: 10, fill: '#64748b' }} />
-              <YAxis tick={{ fontSize: 10, fill: '#64748b' }} />
-              <Tooltip contentStyle={{ background: '#0f172a', border: '1px solid #1e293b', borderRadius: 8, fontSize: 12 }} labelStyle={{ color: '#94a3b8' }} />
-              <Area type="monotone" dataKey="v" stroke="#64748b" strokeWidth={1.5} fill="url(#mockGrad)" strokeDasharray="4 4" />
-            </AreaChart>
-          </ResponsiveContainer>
-        </CardBody>
-      </Card>
-    </div>
-  );
+    <Card><CardHeader title="Historical Validation Lab" subtitle="Real Binance public candles → fees + slippage → 10 strategies → walk-forward → Monte Carlo" action={<Button onClick={runValidation} disabled={running}>{running?'Running…':'Run validation'}</Button>}/><CardBody className="space-y-4">
+      <div className="grid grid-cols-2 gap-3 sm:grid-cols-5"><div className="rounded-lg bg-slate-800/40 p-3"><p className="text-[11px] text-slate-500">Data</p><p className="text-sm font-semibold">BTCUSDT · 5m</p></div><div className="rounded-lg bg-slate-800/40 p-3"><p className="text-[11px] text-slate-500">Strategies</p><p className="text-sm font-semibold">10 max</p></div><div className="rounded-lg bg-slate-800/40 p-3"><p className="text-[11px] text-slate-500">Fee</p><p className="text-sm font-semibold">10 bps/side</p></div><div className="rounded-lg bg-slate-800/40 p-3"><p className="text-[11px] text-slate-500">Slippage</p><p className="text-sm font-semibold">2 bps/side</p></div><div className="rounded-lg bg-slate-800/40 p-3"><p className="text-[11px] text-slate-500">Leverage</p><p className="text-sm font-semibold">≤10x</p></div></div>
+      {error&&<div className="rounded-lg bg-red-950/40 px-3 py-2 text-xs text-red-300">{error}</div>}
+      {report&&<><div className="overflow-x-auto"><table className="w-full text-left text-xs"><thead className="text-slate-500"><tr><th className="px-2 py-2">Strategy</th><th>Trades</th><th>Win %</th><th>PF</th><th>Return</th><th>Max DD</th><th>Score</th></tr></thead><tbody>{report.strategies.map(s=><tr key={s.id} className="border-t border-slate-800"><td className="px-2 py-2 text-slate-200">{s.name}</td><td>{s.trades}</td><td>{s.winRate.toFixed(1)}%</td><td>{s.profitFactor.toFixed(2)}</td><td className={s.returnPct>=0?'text-emerald-400':'text-red-400'}>{s.returnPct.toFixed(2)}%</td><td className="text-red-300">{s.maxDrawdownPct.toFixed(2)}%</td><td>{s.score.toFixed(2)}</td></tr>)}</tbody></table></div>
+      <div className="grid grid-cols-1 gap-3 md:grid-cols-3"><div className="rounded-lg border border-slate-800 p-3"><p className="text-[11px] text-slate-500">Walk-forward selected</p><p className="mt-1 text-sm font-semibold">{report.walkForward.selectedStrategy}</p><p className="mt-1 text-xs text-slate-500">Train {report.walkForward.trainBars} · Validation {report.walkForward.validationBars} · Test {report.walkForward.testBars}</p></div><div className="rounded-lg border border-slate-800 p-3"><p className="text-[11px] text-slate-500">Test result</p><p className="mt-1 text-sm font-semibold">{report.walkForward.test ? `${report.walkForward.test.returnPct.toFixed(2)}% return · PF ${report.walkForward.test.profitFactor.toFixed(2)}` : 'Insufficient test data'}</p></div><div className="rounded-lg border border-slate-800 p-3"><p className="text-[11px] text-slate-500">Monte Carlo</p><p className="mt-1 text-sm font-semibold">{report.monteCarlo.probabilityOfLoss.toFixed(1)}% loss probability</p><p className="mt-1 text-xs text-slate-500">Median {report.monteCarlo.medianReturnPct.toFixed(2)}% · P05 {report.monteCarlo.p05ReturnPct.toFixed(2)}% · DD P95 {report.monteCarlo.p95MaxDrawdownPct.toFixed(2)}%</p></div></div></>}
+      {!report&&!running&&<p className="text-xs text-slate-500">This is the gate before another $10,000 paper run. A strategy is not considered validated just because its raw backtest is profitable.</p>}
+    </CardBody></Card>
+  </div>;
 }
-
-const mockEquity = Array.from({ length: 30 }, (_, i) => {
-  const base = 10000;
-  const trend = i * 15;
-  const noise = Math.sin(i / 3) * 80;
-  return { d: `D${i + 1}`, v: Math.round(base + trend + noise) };
-});
