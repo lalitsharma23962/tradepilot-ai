@@ -1,136 +1,17 @@
 import { createContext, useContext, useEffect, useRef, useState, type ReactNode } from 'react';
 import * as api from './api';
 import type { Account, Position, Trade, Performance, Snapshot, MarketTick, Settings } from './types';
-
 export type ConnState = 'loading' | 'connected' | 'partial' | 'down';
-
-interface AppState {
-  conn: ConnState;
-  account: Account | null;
-  positions: Position[];
-  trades: Trade[];
-  performance: Performance | null;
-  snapshots: Snapshot[];
-  market: MarketTick[];
-  settings: Settings | null;
-  errors: Record<string, string>;
-  refresh: () => void;
+interface AppState { conn: ConnState; account: Account|null; positions: Position[]; trades: Trade[]; performance: Performance|null; snapshots: Snapshot[]; market: MarketTick[]; settings: Settings|null; errors: Record<string,string>; refresh:()=>void; }
+const Ctx=createContext<AppState|null>(null),POLL_MS=3000;
+export function AppProvider({children}:{children:ReactNode}){
+ const[conn,setConn]=useState<ConnState>('loading'),[account,setAccount]=useState<Account|null>(null),[positions,setPositions]=useState<Position[]>([]),[trades,setTrades]=useState<Trade[]>([]),[performance,setPerformance]=useState<Performance|null>(null),[snapshots,setSnapshots]=useState<Snapshot[]>([]),[market,setMarket]=useState<MarketTick[]>([]),[settings,setSettings]=useState<Settings|null>(null),[errors,setErrors]=useState<Record<string,string>>({});
+ const mounted=useRef(true),inFlight=useRef(false);
+ const refresh=async()=>{if(inFlight.current)return;inFlight.current=true;try{const results=await Promise.allSettled([api.portfolio(),api.positions(),api.trades(),api.performance(),api.snapshots(),api.market(),api.getSettingsApi()]);const keys=['portfolio','positions','trades','performance','snapshots','market','settings'],errs:Record<string,string>={};let fails=0;results.forEach((r,i)=>{if(r.status==='rejected'){fails++;errs[keys[i]]=r.reason instanceof Error?r.reason.message:'Request failed'}else if(!r.value.ok){fails++;errs[keys[i]]=r.value.error??'Request failed'}});if(!mounted.current)return;setErrors(errs);setConn(fails===0?'connected':fails<results.length?'partial':'down');
+   if(results[0].status==='fulfilled'&&results[0].value.ok&&results[0].value.data){const acct=results[0].value.data,s=results[6].status==='fulfilled'&&results[6].value.ok?results[6].value.data:null;setAccount({id:1,cash:acct.cash,equity:acct.equity,total_pnl:acct.total_pnl,realized_pnl:acct.realized_pnl,bot_status:acct.bot_status as Account['bot_status'],started_at:acct.started_at,last_tick_at:null,pause_until:s?null:null,pause_reason:null,max_positions:s?.max_positions??20,max_strategies:s?.max_strategies??10,max_leverage:s?.max_leverage??10,max_allocation_pct:s?.max_allocation_pct??20,default_allocation_pct:s?.default_allocation_pct??10,stop_loss_pct:s?.stop_loss_pct??2,take_profit_pct:s?.take_profit_pct??4,confidence_threshold_pct:s?.confidence_threshold_pct??85,leverage:s?.leverage??1,loss_limit_pct:s?.loss_limit_pct??2,loss_pause_hours:s?.loss_pause_hours??24,capital_mode:'UNLIMITED',risk_level:s?.risk_level??'Balanced',theme:s?.theme??'Dark',trade_alerts:s?.trade_alerts??true,pnl_alerts:s?.pnl_alerts??true,risk_alerts:s?.risk_alerts??true})}
+   if(results[1].status==='fulfilled'&&results[1].value.ok&&results[1].value.data)setPositions(results[1].value.data);if(results[2].status==='fulfilled'&&results[2].value.ok&&results[2].value.data)setTrades(results[2].value.data);if(results[3].status==='fulfilled'&&results[3].value.ok&&results[3].value.data)setPerformance(results[3].value.data);if(results[4].status==='fulfilled'&&results[4].value.ok&&results[4].value.data)setSnapshots(results[4].value.data);if(results[5].status==='fulfilled'&&results[5].value.ok&&results[5].value.data)setMarket(results[5].value.data);if(results[6].status==='fulfilled'&&results[6].value.ok&&results[6].value.data)setSettings(results[6].value.data);
+ }finally{inFlight.current=false}};
+ useEffect(()=>{mounted.current=true;refresh();const id=setInterval(refresh,POLL_MS);return()=>{mounted.current=false;clearInterval(id)}},[]);
+ return <Ctx.Provider value={{conn,account,positions,trades,performance,snapshots,market,settings,errors,refresh}}>{children}</Ctx.Provider>;
 }
-
-const Ctx = createContext<AppState | null>(null);
-
-const POLL_MS = 3000;
-
-export function AppProvider({ children }: { children: ReactNode }) {
-  const [conn, setConn] = useState<ConnState>('loading');
-  const [account, setAccount] = useState<Account | null>(null);
-  const [positions, setPositions] = useState<Position[]>([]);
-  const [trades, setTrades] = useState<Trade[]>([]);
-  const [performance, setPerformance] = useState<Performance | null>(null);
-  const [snapshots, setSnapshots] = useState<Snapshot[]>([]);
-  const [market, setMarket] = useState<MarketTick[]>([]);
-  const [settings, setSettings] = useState<Settings | null>(null);
-  const [errors, setErrors] = useState<Record<string, string>>({});
-  const mounted = useRef(true);
-  const inFlight = useRef(false);
-
-  const refresh = async () => {
-    if (inFlight.current) return;
-    inFlight.current = true;
-    try {
-      const results = await Promise.allSettled([
-        api.portfolio(),
-        api.positions(),
-        api.trades(),
-        api.performance(),
-        api.snapshots(),
-        api.market(),
-        api.getSettingsApi(),
-      ]);
-
-      const keys = ['portfolio', 'positions', 'trades', 'performance', 'snapshots', 'market', 'settings'];
-      const newErrors: Record<string, string> = {};
-      let failCount = 0;
-
-      results.forEach((r, i) => {
-        const key = keys[i];
-        if (r.status === 'rejected') {
-          failCount++;
-          newErrors[key] = r.reason instanceof Error ? r.reason.message : 'Request failed';
-        } else if (!r.value.ok) {
-          failCount++;
-          newErrors[key] = r.value.error ?? 'Request failed';
-        }
-      });
-
-      if (mounted.current) {
-        setErrors(newErrors);
-        if (failCount === 0) setConn('connected');
-        else if (failCount < results.length) setConn('partial');
-        else setConn('down');
-
-        if (results[0].status === 'fulfilled' && results[0].value.ok && results[0].value.data) {
-          const acct = await api.portfolio();
-          if (acct.ok && acct.data) {
-            const s = results[6].status === 'fulfilled' && results[6].value.ok ? results[6].value.data : null;
-            setAccount({
-              id: 1,
-              cash: acct.data.cash,
-              equity: acct.data.equity,
-              total_pnl: acct.data.total_pnl,
-              realized_pnl: acct.data.realized_pnl,
-              bot_status: acct.data.bot_status as Account['bot_status'],
-              started_at: acct.data.started_at,
-              last_tick_at: null,
-              max_positions: 3,
-              max_allocation_pct: s?.max_allocation_pct ?? 20,
-              default_allocation_pct: s?.default_allocation_pct ?? 15,
-              stop_loss_pct: s?.stop_loss_pct ?? 2,
-              take_profit_pct: s?.take_profit_pct ?? 4,
-              confidence_threshold_pct: s?.confidence_threshold_pct ?? 90,
-              leverage: 1,
-              risk_level: s?.risk_level ?? 'Balanced',
-              theme: s?.theme ?? 'Dark',
-              trade_alerts: s?.trade_alerts ?? true,
-              pnl_alerts: s?.pnl_alerts ?? true,
-              risk_alerts: s?.risk_alerts ?? true,
-            });
-          }
-        }
-        if (results[1].status === 'fulfilled' && results[1].value.ok && results[1].value.data) setPositions(results[1].value.data);
-        if (results[2].status === 'fulfilled' && results[2].value.ok && results[2].value.data) setTrades(results[2].value.data);
-        if (results[3].status === 'fulfilled' && results[3].value.ok && results[3].value.data) setPerformance(results[3].value.data);
-        if (results[4].status === 'fulfilled' && results[4].value.ok && results[4].value.data) setSnapshots(results[4].value.data);
-        if (results[5].status === 'fulfilled' && results[5].value.ok && results[5].value.data) setMarket(results[5].value.data);
-        if (results[6].status === 'fulfilled' && results[6].value.ok && results[6].value.data) setSettings(results[6].value.data);
-      }
-    } finally {
-      inFlight.current = false;
-    }
-  };
-
-  useEffect(() => {
-    mounted.current = true;
-    refresh();
-    const id = setInterval(refresh, POLL_MS);
-    return () => {
-      mounted.current = false;
-      clearInterval(id);
-    };
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
-
-  return (
-    <Ctx.Provider
-      value={{ conn, account, positions, trades, performance, snapshots, market, settings, errors, refresh }}
-    >
-      {children}
-    </Ctx.Provider>
-  );
-}
-
-export function useApp(): AppState {
-  const ctx = useContext(Ctx);
-  if (!ctx) throw new Error('useApp must be used within AppProvider');
-  return ctx;
-}
+export function useApp(){const ctx=useContext(Ctx);if(!ctx)throw new Error('useApp must be used within AppProvider');return ctx}
