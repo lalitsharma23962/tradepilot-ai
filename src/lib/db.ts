@@ -13,13 +13,20 @@ CREATE TABLE IF NOT EXISTS tp_account (
   bot_status text NOT NULL DEFAULT 'STOPPED',
   started_at timestamptz,
   last_tick_at timestamptz,
-  max_positions integer NOT NULL DEFAULT 3,
+  pause_until timestamptz,
+  pause_reason text,
+  max_positions integer NOT NULL DEFAULT 20,
+  max_strategies integer NOT NULL DEFAULT 10,
+  max_leverage numeric(5,2) NOT NULL DEFAULT 10.00,
   max_allocation_pct numeric(5,2) NOT NULL DEFAULT 20.00,
-  default_allocation_pct numeric(5,2) NOT NULL DEFAULT 15.00,
+  default_allocation_pct numeric(5,2) NOT NULL DEFAULT 10.00,
   stop_loss_pct numeric(5,2) NOT NULL DEFAULT 2.00,
   take_profit_pct numeric(5,2) NOT NULL DEFAULT 4.00,
-  confidence_threshold_pct numeric(5,2) NOT NULL DEFAULT 90.00,
+  confidence_threshold_pct numeric(5,2) NOT NULL DEFAULT 85.00,
   leverage numeric(5,2) NOT NULL DEFAULT 1.00,
+  loss_limit_pct numeric(5,2) NOT NULL DEFAULT 2.00,
+  loss_pause_hours numeric(5,2) NOT NULL DEFAULT 24.00,
+  capital_mode text NOT NULL DEFAULT 'UNLIMITED',
   risk_level text NOT NULL DEFAULT 'Balanced',
   theme text NOT NULL DEFAULT 'Dark',
   trade_alerts boolean NOT NULL DEFAULT true,
@@ -87,9 +94,17 @@ export async function getDb(): Promise<PGlite> {
     const location = typeof indexedDB !== 'undefined' ? 'idb://tradepilot' : undefined;
     const db = new PGlite(location);
     await db.exec(SCHEMA_SQL);
-    // Existing browser databases need a lightweight migration because CREATE TABLE
-    // does not alter an already-created tp_account table.
-    await db.exec(`ALTER TABLE tp_account ADD COLUMN IF NOT EXISTS confidence_threshold_pct numeric(5,2) NOT NULL DEFAULT 90.00;`);
+    await db.exec(`ALTER TABLE tp_account ADD COLUMN IF NOT EXISTS pause_until timestamptz;`);
+    await db.exec(`ALTER TABLE tp_account ADD COLUMN IF NOT EXISTS pause_reason text;`);
+    await db.exec(`ALTER TABLE tp_account ADD COLUMN IF NOT EXISTS max_positions integer NOT NULL DEFAULT 20;`);
+    await db.exec(`ALTER TABLE tp_account ADD COLUMN IF NOT EXISTS max_strategies integer NOT NULL DEFAULT 10;`);
+    await db.exec(`ALTER TABLE tp_account ADD COLUMN IF NOT EXISTS max_leverage numeric(5,2) NOT NULL DEFAULT 10.00;`);
+    await db.exec(`ALTER TABLE tp_account ADD COLUMN IF NOT EXISTS loss_limit_pct numeric(5,2) NOT NULL DEFAULT 2.00;`);
+    await db.exec(`ALTER TABLE tp_account ADD COLUMN IF NOT EXISTS loss_pause_hours numeric(5,2) NOT NULL DEFAULT 24.00;`);
+    await db.exec(`ALTER TABLE tp_account ADD COLUMN IF NOT EXISTS capital_mode text NOT NULL DEFAULT 'UNLIMITED';`);
+    await db.exec(`ALTER TABLE tp_account ADD COLUMN IF NOT EXISTS leverage numeric(5,2) NOT NULL DEFAULT 1.00;`);
+    await db.exec(`ALTER TABLE tp_account ADD COLUMN IF NOT EXISTS confidence_threshold_pct numeric(5,2) NOT NULL DEFAULT 85.00;`);
+    await db.exec(`UPDATE tp_account SET max_positions = LEAST(GREATEST(max_positions, 1), 20), max_strategies = LEAST(GREATEST(max_strategies, 1), 10), max_leverage = LEAST(GREATEST(max_leverage, 1), 10), leverage = LEAST(GREATEST(leverage, 1), max_leverage), capital_mode = 'UNLIMITED';`);
     await db.exec(SEED_SQL);
     dbInstance = db;
     return db;
@@ -104,14 +119,11 @@ export async function resetDatabase(): Promise<void> {
   await db.exec('DELETE FROM tp_trades;');
   await db.exec('DELETE FROM tp_positions;');
   await db.exec(
-    `UPDATE tp_account SET cash=10000.00, equity=10000.00, total_pnl=0.00, realized_pnl=0.00, bot_status='STOPPED', started_at=NULL, last_tick_at=NULL;`
+    `UPDATE tp_account SET cash=10000.00, equity=10000.00, total_pnl=0.00, realized_pnl=0.00, bot_status='STOPPED', started_at=NULL, last_tick_at=NULL, pause_until=NULL, pause_reason=NULL, max_positions=20, max_strategies=10, max_leverage=10, leverage=1, loss_limit_pct=2, loss_pause_hours=24, capital_mode='UNLIMITED';`
   );
 }
 
-export async function query<T = Record<string, unknown>>(
-  sql: string,
-  params?: unknown[]
-): Promise<T[]> {
+export async function query<T = Record<string, unknown>>(sql: string, params?: unknown[]): Promise<T[]> {
   const db = await getDb();
   const result = await db.query(sql, params ?? []);
   return (result.rows ?? []) as T[];
