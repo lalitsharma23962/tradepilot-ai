@@ -19,7 +19,7 @@ function normalizeAccount(r: Record<string, unknown>): Account {
     bot_status: (r.bot_status as Account['bot_status']) ?? 'STOPPED', started_at: (r.started_at as string | null) ?? null,
     last_tick_at: (r.last_tick_at as string | null) ?? null, max_positions: Math.max(1, num(r.max_positions) || 3),
     max_strategies: Math.min(10, Math.max(1, num(r.max_strategies) || 10)), max_allocation_pct: Math.min(20, Math.max(1, num(r.max_allocation_pct) || 20)),
-    default_allocation_pct: Math.min(20, Math.max(1, num(r.default_allocation_pct) || 15),), stop_loss_pct: num(r.stop_loss_pct) || 2,
+    default_allocation_pct: Math.min(20, Math.max(1, num(r.default_allocation_pct) || 15)), stop_loss_pct: num(r.stop_loss_pct) || 2,
     take_profit_pct: num(r.take_profit_pct) || 4, confidence_threshold_pct: Math.min(95, Math.max(85, num(r.confidence_threshold_pct) || 85)),
     leverage: Math.min(10, Math.max(1, num(r.leverage) || 1)), loss_limit_pct: Math.min(20, Math.max(0.25, num(r.loss_limit_pct) || 2)),
     risk_pause_until: (r.risk_pause_until as string | null) ?? null, fee_bps: Math.max(0, num(r.fee_bps) || 10), slippage_bps: Math.max(0, num(r.slippage_bps) || 2),
@@ -45,7 +45,7 @@ function normalizeTrade(r: Record<string, unknown>): Trade {
 }
 
 export async function getSnapshots(limit = 500): Promise<Snapshot[]> {
-  const rows = await query<Record<string, unknown>>(`SELECT * FROM tp_snapshots ORDER BY ts DESC LIMIT $1;`);
+  const rows = await query<Record<string, unknown>>(`SELECT * FROM tp_snapshots ORDER BY ts DESC LIMIT $1;`, [limit]);
   return rows.map(normalizeSnapshot).reverse();
 }
 function normalizeSnapshot(r: Record<string, unknown>): Snapshot {
