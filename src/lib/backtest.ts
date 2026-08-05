@@ -6,7 +6,7 @@ export type StrategyResult={id:string;name:string;trades:number;wins:number;loss
 export type ValidationGate={status:'VALIDATED'|'REJECTED';reasons:string[];minimumTestTrades:number;minimumProfitFactor:number;minimumTestReturnPct:number;maximumTestDrawdownPct:number;maximumMonteCarloLossProbability:number};
 export type ValidationReport={symbol:string;interval:string;candles:number;dataQuality:{startTime:number;endTime:number;durationDays:number;expectedIntervalMinutes:number;gaps:number;duplicateTimestamps:number};costs:{feeBps:number;slippageBps:number};strategies:StrategyResult[];walkForward:{trainBars:number;validationBars:number;testBars:number;selectedStrategy:string;validation:StrategyResult|null;test:StrategyResult|null};monteCarlo:{simulations:number;probabilityOfLoss:number;medianReturnPct:number;p05ReturnPct:number;p95MaxDrawdownPct:number};gate:ValidationGate;generatedAt:string};
 
-export const MAX_STRATEGIES=10;
+export const MAX_STRATEGIES=13;
 export const DEFAULT_BACKTEST_CONFIG:BacktestConfig={initialCapital:10000,feeBps:10,slippageBps:2,riskPerTradePct:0.25,maxPositionPct:20,leverage:10,stopAtr:1.25,rewardRisk:1.8,maxBarsInTrade:48};
 export const STRATEGIES=[
  {id:'production',name:'Production Breakout v12'},
@@ -17,11 +17,14 @@ export const STRATEGIES=[
  {id:'bollinger',name:'Bollinger Reversion'},
  {id:'macd',name:'MACD Trend'},
  {id:'range-break',name:'Volatility Range Break'},
+ {id:'range-break-30',name:'Volatility Range Break 30'},
+ {id:'range-break-40',name:'Volatility Range Break 40'},
  {id:'momentum',name:'Multi-Horizon Momentum'},
+ {id:'momentum-5',name:'Momentum 5-Day'},
  {id:'hybrid',name:'Regime Hybrid'},
 ] as const;
 
-const MIN_HISTORY_BARS=10000,MIN_TRAIN_TRADES=30,MIN_VALIDATION_TRADES=15,MIN_TEST_TRADES=30,MIN_TEST_PF=1.05,MAX_TEST_DD=20,MAX_MC_LOSS=45;
+const MIN_HISTORY_BARS=10000,MIN_TRAIN_TRADES=30,MIN_VALIDATION_TRADES=20,MIN_FOLD_TRADES=8,MIN_TEST_TRADES=30,MIN_TEST_PF=1.05,MAX_TEST_DD=20,MAX_MC_LOSS=45;
 const INDICATOR_LOOKBACK=180;
 const clamp=(v:number,lo:number,hi:number)=>Math.max(lo,Math.min(hi,v));
 const mean=(xs:number[])=>xs.length?xs.reduce((a,b)=>a+b,0)/xs.length:0;
@@ -38,9 +41,10 @@ function legacySignal(id:string,cs:Candle[]):1|-1|0{
  const e10=ema(closes,10),e20=ema(closes,20),e50=ema(closes,50),e100=ema(closes,100),a=atr(cs),r=rsi(closes);
  if(!a||!Number.isFinite(a))return 0;
  const prior=closes.slice(0,-1),hi20=highest(prior,20),lo20=lowest(prior,20),hi50=highest(prior,50),lo50=lowest(prior,50);
+ const hi30=highest(prior,30),lo30=lowest(prior,30),hi40=highest(prior,40),lo40=lowest(prior,40);
  const last20=closes.slice(-20),sd20=std(last20),mid20=mean(last20),upper=mid20+2*sd20,lower=mid20-2*sd20;
  const macd=ema(closes,12)-ema(closes,26),prev=closes.slice(0,-1),macdPrev=ema(prev,12)-ema(prev,26);
- const momentum=last/closes[Math.max(0,closes.length-21)]-1,vol=cs[cs.length-1].volume,avgVol=mean(cs.slice(-20).map(c=>c.volume));
+ const momentum=last/closes[Math.max(0,closes.length-21)]-1,momentum5=last/closes[Math.max(0,closes.length-73)]-1,vol=cs[cs.length-1].volume,avgVol=mean(cs.slice(-20).map(c=>c.volume));
  void vol; void avgVol;
  switch(id){
   case'ema-trend':return e20>e50&&e50>e100&&last>e10?1:e20<e50&&e50<e100&&last<e10?-1:0;
@@ -50,7 +54,10 @@ function legacySignal(id:string,cs:Candle[]):1|-1|0{
   case'bollinger':return last<lower&&last>prevClose?1:last>upper&&last<prevClose?-1:0;
   case'macd':return macd>0&&macd>macdPrev&&last>e50?1:macd<0&&macd<macdPrev&&last<e50?-1:0;
   case'range-break':return last>hi50&&a/last>0.003?1:last<lo50&&a/last>0.003?-1:0;
+  case'range-break-30':return last>hi30&&a/last>0.002?1:last<lo30&&a/last>0.002?-1:0;
+  case'range-break-40':return last>hi40&&a/last>0.0025?1:last<lo40&&a/last>0.0025?-1:0;
   case'momentum':return momentum>0.008&&last>e20?1:momentum<-0.008&&last<e20?-1:0;
+  case'momentum-5':return momentum5>0.02&&last>e20?1:momentum5<-0.02&&last<e20?-1:0;
   case'hybrid':return e20>e50&&momentum>0.004&&r>50&&r<72?1:e20<e50&&momentum<-0.004&&r<50&&r>28?-1:0;
   default:return 0;
  }
@@ -132,22 +139,31 @@ function monteCarlo(returnsPct:number[],simulations=5000,seed=0x51a7):Validation
 
 function buildQuality(candles:Candle[],interval:string){const expected=intervalToMs(interval),gaps=candles.slice(1).filter((c,i)=>c.openTime-candles[i].openTime!==expected).length,duplicates=candles.length-new Set(candles.map(c=>c.openTime)).size;return{startTime:candles[0]?.openTime??0,endTime:candles[candles.length-1]?.openTime??0,durationDays:candles.length?(candles[candles.length-1].openTime-candles[0].openTime)/86400000:0,expectedIntervalMinutes:expected/60000,gaps,duplicateTimestamps:duplicates};}
 
-const validationSelectionScore=(train:StrategyResult,validation:StrategyResult)=>{
- const consistencyPenalty=Math.max(0,train.score-validation.score)*0.25;
- return validation.score*0.7+train.score*0.3-consistencyPenalty;
+const validationSelectionScore=(train:StrategyResult,validation:StrategyResult,foldA:StrategyResult,foldB:StrategyResult)=>{
+ const folds=[foldA,foldB];
+ const averageFoldScore=mean(folds.map(f=>f.score));
+ const positiveFoldBonus=folds.filter(f=>f.returnPct>0&&f.profitFactor>=1.0).length*1.5;
+ const instabilityPenalty=Math.abs(foldA.score-foldB.score)*0.2+Math.max(0,train.score-averageFoldScore)*0.15;
+ return train.score*0.2+validation.score*0.35+averageFoldScore*0.45+positiveFoldBonus-instabilityPenalty;
 };
 
 export async function runValidation(symbol='BTCUSDT',interval='5m',cfg:Partial<BacktestConfig>={}):Promise<ValidationReport>{
  const config={...DEFAULT_BACKTEST_CONFIG,...cfg,maxPositionPct:clamp(cfg.maxPositionPct??20,1,20),leverage:clamp(cfg.leverage??10,1,10),riskPerTradePct:clamp(cfg.riskPerTradePct??0.25,0.05,1)};
  const candles=await fetchHistoricalCandles(symbol,interval,20000);if(candles.length<MIN_HISTORY_BARS)throw new Error(`Validation requires at least ${MIN_HISTORY_BARS.toLocaleString()} completed historical candles; received ${candles.length.toLocaleString()}.`);
- // 35/15/50 gives the selection stages enough history while reserving half the data
- // for one untouched out-of-sample test. Strategy selection happens only on train+validation;
- // the test window is never used to choose a strategy.
- const trainEnd=Math.floor(candles.length*.35),validationEnd=Math.floor(candles.length*.50);
+ // 30/20/50 split: selection is made from training plus two sequential validation folds;
+ // the final 50% remains completely untouched until one strategy has been selected.
+ const trainEnd=Math.floor(candles.length*.30),validationEnd=Math.floor(candles.length*.50),foldMid=Math.floor((trainEnd+validationEnd)/2);
  const trainResults=STRATEGIES.map(s=>simulateRange(candles,s.id,config,120,trainEnd));
  const eligibleTrain=trainResults.filter(r=>r.trades>=MIN_TRAIN_TRADES);
- const validationCandidates=eligibleTrain.map(train=>({train,validation:simulateRange(candles,train.id,config,trainEnd,validationEnd)})).filter(x=>x.validation.trades>=MIN_VALIDATION_TRADES);
- const selectedCandidate=validationCandidates.slice().sort((a,b)=>validationSelectionScore(b.train,b.validation)-validationSelectionScore(a.train,a.validation))[0];
+ const validationCandidates=eligibleTrain.map(train=>{
+  const validation=simulateRange(candles,train.id,config,trainEnd,validationEnd);
+  const foldA=simulateRange(candles,train.id,config,trainEnd,foldMid);
+  const foldB=simulateRange(candles,train.id,config,foldMid,validationEnd);
+  return{train,validation,foldA,foldB};
+ }).filter(x=>x.validation.trades>=MIN_VALIDATION_TRADES&&x.foldA.trades>=MIN_FOLD_TRADES&&x.foldB.trades>=MIN_FOLD_TRADES);
+ const stableCandidates=validationCandidates.filter(x=>x.validation.returnPct>0&&x.validation.profitFactor>=1.0&&x.foldA.returnPct>-1&&x.foldB.returnPct>-1);
+ const pool=stableCandidates.length?stableCandidates:validationCandidates;
+ const selectedCandidate=pool.slice().sort((a,b)=>validationSelectionScore(b.train,b.validation,b.foldA,b.foldB)-validationSelectionScore(a.train,a.validation,a.foldA,a.foldB))[0];
  const selectedTrain=selectedCandidate?.train??eligibleTrain.slice().sort((a,b)=>b.score-a.score)[0]??trainResults.slice().sort((a,b)=>b.score-a.score)[0];
  const selectedId=selectedTrain?.id??'production';
  const validation=selectedCandidate?.validation??simulateRange(candles,selectedId,config,trainEnd,validationEnd);
@@ -155,8 +171,11 @@ export async function runValidation(symbol='BTCUSDT',interval='5m',cfg:Partial<B
  const testResult=simulateRange(candles,selectedId,config,validationEnd,candles.length);
  const fullResults=trainResults.map(r=>r.id==='production'?simulateProductionRange(candles,config,120,candles.length):simulateRange(candles,r.id,config,120,candles.length)).sort((a,b)=>b.score-a.score);
  const mc=monteCarlo(testResult.tradeReturnsPct),reasons:string[]=[];
- if(buildQuality(candles,interval).gaps>Math.max(3,Math.floor(candles.length*.001)))reasons.push(`Historical data contains ${buildQuality(candles,interval).gaps} interval gaps.`);
- if(buildQuality(candles,interval).duplicateTimestamps>0)reasons.push(`Historical data contains ${buildQuality(candles,interval).duplicateTimestamps} duplicate timestamps.`);
+ if(!validationCandidates.length)reasons.push('No strategy met the minimum multi-fold validation trade requirements before the OOS test.');
+ if(!stableCandidates.length)reasons.push('No strategy passed the pre-OOS stability filter across both validation folds.');
+ const quality=buildQuality(candles,interval);
+ if(quality.gaps>Math.max(3,Math.floor(candles.length*.001)))reasons.push(`Historical data contains ${quality.gaps} interval gaps.`);
+ if(quality.duplicateTimestamps>0)reasons.push(`Historical data contains ${quality.duplicateTimestamps} duplicate timestamps.`);
  if(selectedTrain.trades<MIN_TRAIN_TRADES)reasons.push(`Selected strategy produced only ${selectedTrain.trades} training trades; at least ${MIN_TRAIN_TRADES} are required.`);
  if(validation.trades<MIN_VALIDATION_TRADES)reasons.push(`Selected strategy produced only ${validation.trades} validation trades; at least ${MIN_VALIDATION_TRADES} are required.`);
  if(testResult.trades<MIN_TEST_TRADES)reasons.push(`Out-of-sample test has only ${testResult.trades} trades; at least ${MIN_TEST_TRADES} are required.`);
@@ -165,6 +184,5 @@ export async function runValidation(symbol='BTCUSDT',interval='5m',cfg:Partial<B
  if(testResult.maxDrawdownPct>MAX_TEST_DD)reasons.push(`Out-of-sample max drawdown ${testResult.maxDrawdownPct.toFixed(2)}% exceeds ${MAX_TEST_DD}%.`);
  if(mc.probabilityOfLoss>MAX_MC_LOSS)reasons.push(`Monte Carlo loss probability ${mc.probabilityOfLoss.toFixed(1)}% exceeds ${MAX_MC_LOSS}%.`);
  const gate:ValidationGate={status:reasons.length?'REJECTED':'VALIDATED',reasons,minimumTestTrades:MIN_TEST_TRADES,minimumProfitFactor:MIN_TEST_PF,minimumTestReturnPct:0,maximumTestDrawdownPct:MAX_TEST_DD,maximumMonteCarloLossProbability:MAX_MC_LOSS};
- const quality=buildQuality(candles,interval);
  return{symbol,interval,candles:candles.length,dataQuality:quality,costs:{feeBps:config.feeBps,slippageBps:config.slippageBps},strategies:fullResults,walkForward:{trainBars:trainEnd,validationBars:validationEnd-trainEnd,testBars:candles.length-validationEnd,selectedStrategy:selectedTrain.name,validation,test:testResult},monteCarlo:mc,gate,generatedAt:new Date().toISOString()};
 }
