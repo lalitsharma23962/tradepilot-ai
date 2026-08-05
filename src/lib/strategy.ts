@@ -27,7 +27,7 @@ function production(prices:number[],cfg:StrategyConfig):StrategySignal{
  if(longTrend&&longMomentum&&longStructure&&longScore>=cfg.minScore&&rrsi>=50&&rrsi<=65&&sane){side='LONG';score=longScore;reasons=[longTrend?'bullish EMA regime':'',longMomentum?'strong positive momentum':'',longBreak?'20-bar breakout':'EMA20 pullback/reclaim','RSI confirmation',notExtended?'price not extended from EMA20':'','tradable volatility'].filter(Boolean);}
  else if(shortTrend&&shortMomentum&&shortStructure&&shortScore>=cfg.minScore&&rrsi>=35&&rrsi<=50&&sane){side='SHORT';score=shortScore;reasons=[shortTrend?'bearish EMA regime':'',shortMomentum?'strong negative momentum':'',shortBreak?'20-bar breakdown':'EMA20 pullback/reclaim','RSI confirmation',notExtended?'price not extended from EMA20':'','tradable volatility'].filter(Boolean);}
  else return wait(entry,['Production setup below quality threshold'],Math.max(longScore,shortScore));
- const dist=Math.max(a*cfg.atrStopMultiple,entry*.0012),riskReward=clamp(1.8,cfg.minRiskReward,cfg.maxRiskReward),stopLoss=side==='LONG'?entry-dist:entry+dist,takeProfit=side==='LONG'?entry+dist*riskReward:entry-dist*riskReward;
+ const dist=Math.max(a*cfg.atrStopMultiple,entry*.0012),riskReward=clamp(2.2,cfg.minRiskReward,cfg.maxRiskReward),stopLoss=side==='LONG'?entry-dist:entry+dist,takeProfit=side==='LONG'?entry+dist*riskReward:entry-dist*riskReward;
  return{action:side,score:Math.round(clamp(score,0,100)),confidence:Math.round(clamp(score,0,100)),strategy:'Production Breakout v8',entry,stopLoss,takeProfit,riskReward,reasons};
 }
 export function evaluateProductionStrategy(prices:number[],config:Partial<StrategyConfig>={}):StrategySignal{return production(prices,{...DEFAULT_CONFIG,...config});}
