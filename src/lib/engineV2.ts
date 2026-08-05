@@ -4,206 +4,38 @@ import type { AiRecommendation, MarketTick, Position } from './types';
 import { evaluateStrategy, type StrategySignal } from './strategy';
 
 // PAPER TRADING ONLY. No exchange API is called here.
-// This engine deliberately has no fixed six-trade/session cap. Entries are
-// gated by validated signal quality, risk budget, position limits, costs,
-// cooldown and the persisted 24-hour loss-limit lockout.
+// There is no fixed six-trade/session cap. Entries are gated by signal quality,
+// risk budget, costs, position limits, cooldown and the persisted 24h lockout.
 const SYMBOLS = [
-  { symbol: 'BTC/USDT', base: 68000, vol: 0.0045 },
-  { symbol: 'ETH/USDT', base: 3500, vol: 0.006 },
-  { symbol: 'SOL/USDT', base: 145, vol: 0.008 },
-  { symbol: 'BNB/USDT', base: 580, vol: 0.0055 },
-  { symbol: 'XRP/USDT', base: 0.62, vol: 0.009 },
-  { symbol: 'ADA/USDT', base: 0.45, vol: 0.0085 },
-  { symbol: 'AVAX/USDT', base: 28, vol: 0.008 },
-  { symbol: 'LINK/USDT', base: 14.5, vol: 0.007 },
+  { symbol:'BTC/USDT', base:68000, vol:0.0045 }, { symbol:'ETH/USDT', base:3500, vol:0.006 },
+  { symbol:'SOL/USDT', base:145, vol:0.008 }, { symbol:'BNB/USDT', base:580, vol:0.0055 },
+  { symbol:'XRP/USDT', base:0.62, vol:0.009 }, { symbol:'ADA/USDT', base:0.45, vol:0.0085 },
+  { symbol:'AVAX/USDT', base:28, vol:0.008 }, { symbol:'LINK/USDT', base:14.5, vol:0.007 },
 ];
-
-const STRATEGY = {
-  minScore: 75,
-  minRiskReward: 2,
-  maxRiskReward: 6,
-  atrStopMultiple: 1.0,
-  lookback: 180,
-  maxConsecutiveLosses: 2,
-  cooldownTicks: 18,
-  riskPerTradePct: 0.35,
-  maxAllocationPct: 20,
-  breakEvenAtR: 1.25,
-  trailAtR: 2.5,
-  trailLockR: 1,
-};
-const LOCKOUT_MS = 24 * 60 * 60 * 1000;
-
-interface PriceState { symbol: string; price: number; base: number; vol: number; rng: () => number; history: { ts: number; price: number }[]; regimeDrift: number; regimeTicks: number; }
-function mulberry32(seed: number) { return function () { seed |= 0; seed = (seed + 0x6d2b79f5) | 0; let t = Math.imul(seed ^ (seed >>> 15), 1 | seed); t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t; return ((t ^ (t >>> 14)) >>> 0) / 4294967296; }; }
-const priceStates = new Map<string, PriceState>();
-let tickCount = 0, engineRunning = false, tickTimer: ReturnType<typeof setInterval> | null = null, snapshotTimer: ReturnType<typeof setInterval> | null = null, ticking = false;
-let consecutiveLosses = 0, lastEntryTick = -Infinity, sessionStartEquity = 10000, tradeDayKey = '';
-
-function currentDayKey() { return new Date().toISOString().slice(0, 10); }
-function round(v: number, dp = 2) { const f = 10 ** dp; return Math.round(v * f) / f; }
-function clampScore(v: number) { return Math.max(60, Math.min(95, Math.round(v))); }
-
-async function resetDailyCountersIfNeeded() {
-  const key = currentDayKey();
-  if (tradeDayKey !== key) { tradeDayKey = key; consecutiveLosses = 0; sessionStartEquity = (await getAccount()).equity; }
-}
-
-function seedPriceStates() {
-  if (priceStates.size) return;
-  const now = Date.now();
-  for (const s of SYMBOLS) {
-    const rng = mulberry32(Math.floor(s.base * 1000) + 17391); let price = s.base, regimeDrift = 0, regimeTicks = 0;
-    const history: { ts: number; price: number }[] = [];
-    for (let i = STRATEGY.lookback - 1; i >= 0; i--) {
-      regimeTicks++; if (regimeTicks >= 70) { regimeTicks = 0; const r = rng(); regimeDrift = r < 0.42 ? (rng() > 0.5 ? 0.0011 : -0.0011) : 0; }
-      const meanReversion = ((s.base - price) / s.base) * 0.002, shock = (rng() - 0.5) * 2 * s.vol;
-      price = Math.max(0.0001, price * (1 + regimeDrift + meanReversion + shock)); history.push({ ts: now - i * 2000, price });
-    }
-    priceStates.set(s.symbol, { symbol: s.symbol, price, base: s.base, vol: s.vol, rng, history, regimeDrift, regimeTicks });
-  }
-}
-
-function advancePrices() {
-  seedPriceStates();
-  for (const s of priceStates.values()) {
-    s.regimeTicks++; if (s.regimeTicks >= 70) { s.regimeTicks = 0; const r = s.rng(); s.regimeDrift = r < 0.42 ? (s.rng() > 0.5 ? 0.0011 : -0.0011) : 0; }
-    const meanReversion = ((s.base - s.price) / s.base) * 0.002, shock = (s.rng() - 0.5) * 2 * s.vol;
-    s.price = Math.max(0.0001, s.price * (1 + s.regimeDrift + meanReversion + shock)); s.history.push({ ts: Date.now(), price: s.price }); if (s.history.length > 400) s.history.shift();
-  }
-  tickCount++;
-}
-
-function riskProfile(riskLevel: string, threshold: number) {
-  const minScore = clampScore(threshold);
-  if (riskLevel === 'Conservative') return { minScore, riskPerTradePct: 0.20, maxAllocationPct: 15 };
-  if (riskLevel === 'Aggressive') return { minScore, riskPerTradePct: 0.50, maxAllocationPct: 20 };
-  return { minScore, riskPerTradePct: STRATEGY.riskPerTradePct, maxAllocationPct: 18 };
-}
-
-export function getTickCount() { return tickCount; }
-export function isEngineRunning() { return engineRunning; }
-export function getMarketTicks(): MarketTick[] { seedPriceStates(); return Array.from(priceStates.values()).map(s => { const prev = s.history.at(-2)?.price ?? s.price; return { symbol: s.symbol, price: round(s.price, s.price >= 100 ? 2 : 4), change_pct: round((s.price - prev) / prev * 100, 2), ts: s.history.at(-1)?.ts ?? Date.now() }; }); }
-export function getPriceHistory(symbol: string, points = 180) { seedPriceStates(); return priceStates.get(symbol)?.history.slice(-points) ?? []; }
-
-export async function startEngine(): Promise<{ ok: boolean; message: string }> {
-  if (engineRunning) return { ok: false, message: 'Engine is already running. Duplicate start rejected.' };
-  const account = await getAccount();
-  if (account.bot_status === 'RUNNING') return { ok: false, message: 'Bot is already RUNNING. Duplicate start rejected.' };
-  if (account.risk_pause_until && new Date(account.risk_pause_until).getTime() > Date.now()) {
-    const mins = Math.ceil((new Date(account.risk_pause_until).getTime() - Date.now()) / 60000);
-    return { ok: false, message: `Risk lockout active for ${mins} more minutes. Capital protection pause is 24 hours.` };
-  }
-  seedPriceStates(); await resetDailyCountersIfNeeded(); sessionStartEquity = account.equity; engineRunning = true;
-  await execute(`UPDATE tp_account SET bot_status='RUNNING', started_at=now(), last_tick_at=now() WHERE id=1;`);
-  tickTimer = setInterval(tick, 2000); snapshotTimer = setInterval(takeSnapshot, 10000); setTimeout(tick, 100);
-  return { ok: true, message: 'Paper engine started with cost-aware sizing, 20% position cap, 10x leverage ceiling and 24h loss lockout.' };
-}
-
-export async function stopEngine() { engineRunning = false; if (tickTimer) clearInterval(tickTimer); if (snapshotTimer) clearInterval(snapshotTimer); tickTimer = null; snapshotTimer = null; await execute(`UPDATE tp_account SET bot_status='STOPPED', last_tick_at=now() WHERE id=1;`); return { ok: true, message: 'Paper bot stopped.' }; }
-export async function restartEngine() { await stopEngine(); await new Promise(r => setTimeout(r, 200)); return startEngine(); }
-
-async function recomputeEquity() {
-  const account = await getAccount(), positions = await getPositions();
-  const margin = positions.reduce((a,p) => a + p.notional / Math.max(1, account.leverage), 0);
-  const unrealized = positions.reduce((a,p) => a + p.unrealized_pnl, 0);
-  await execute(`UPDATE tp_account SET equity=$1, total_pnl=$2 WHERE id=1;`, [round(account.cash + margin + unrealized, 2), round(account.realized_pnl + unrealized, 2)]);
-}
-
-async function triggerRiskPause(reason: string) {
-  const positions = await getPositions();
-  for (const p of positions) await closePosition(p.id, undefined, `CAPITAL PROTECTION: ${reason}`);
-  const until = new Date(Date.now() + LOCKOUT_MS).toISOString();
-  engineRunning = false; if (tickTimer) clearInterval(tickTimer); if (snapshotTimer) clearInterval(snapshotTimer); tickTimer = null; snapshotTimer = null;
-  await execute(`UPDATE tp_account SET bot_status='STOPPED', risk_pause_until=$1, last_tick_at=now() WHERE id=1;`, [until]);
-}
-
-async function tick() {
-  if (!engineRunning || ticking) return; ticking = true;
-  try {
-    await resetDailyCountersIfNeeded(); advancePrices();
-    for (const pos of await getPositions()) {
-      const ps = priceStates.get(pos.symbol); if (!ps) continue;
-      const px = round(ps.price, pos.entry_price >= 100 ? 2 : 4);
-      await execute(`UPDATE tp_positions SET current_price=$1, unrealized_pnl=$2 WHERE id=$3;`, [px, calcUnrealizedPnl(pos, px), pos.id]);
-      await manageRunner(pos, px);
-      const sl = pos.side === 'LONG' ? px <= pos.stop_loss : px >= pos.stop_loss, tp = pos.side === 'LONG' ? px >= pos.take_profit : px <= pos.take_profit;
-      if (sl || tp) await closePosition(pos.id, px, sl ? 'Stop Loss / Protected Runner' : 'Take Profit');
-    }
-    await recomputeEquity();
-    const account = await getAccount();
-    const drawdownPct = sessionStartEquity > 0 ? Math.max(0, (sessionStartEquity - account.equity) / sessionStartEquity * 100) : 0;
-    if (drawdownPct >= account.loss_limit_pct) { await triggerRiskPause(`loss limit ${account.loss_limit_pct.toFixed(2)}% reached`); return; }
-    const positions = await getPositions(), profile = riskProfile(account.risk_level, account.confidence_threshold_pct);
-    if (positions.length < account.max_positions && tickCount - lastEntryTick >= STRATEGY.cooldownTicks) await tryOpenPosition(profile);
-    await recomputeEquity(); await execute(`UPDATE tp_account SET last_tick_at=now() WHERE id=1;`);
-  } catch (err) { console.error('[engine-v5] tick error:', err); } finally { ticking = false; }
-}
-
-function calcUnrealizedPnl(pos: Position, currentPrice: number) { return round((pos.side === 'LONG' ? 1 : -1) * (currentPrice - pos.entry_price) * pos.quantity, 2); }
-
-async function manageRunner(pos: Position, currentPrice: number) {
-  const initialRisk = Math.abs(pos.entry_price - pos.stop_loss); if (!initialRisk) return;
-  const favorable = pos.side === 'LONG' ? currentPrice - pos.entry_price : pos.entry_price - currentPrice, r = favorable / initialRisk;
-  if (r < STRATEGY.breakEvenAtR) return;
-  const newStop = r >= STRATEGY.trailAtR ? (pos.side === 'LONG' ? Math.max(pos.stop_loss, pos.entry_price + initialRisk * STRATEGY.trailLockR) : Math.min(pos.stop_loss, pos.entry_price - initialRisk * STRATEGY.trailLockR)) : pos.entry_price;
-  const improves = pos.side === 'LONG' ? newStop > pos.stop_loss : newStop < pos.stop_loss;
-  if (improves) await execute(`UPDATE tp_positions SET stop_loss=$1 WHERE id=$2;`, [round(newStop, pos.entry_price >= 100 ? 2 : 4), pos.id]);
-}
-
-async function tryOpenPosition(profile: ReturnType<typeof riskProfile>) {
-  const account = await getAccount(), positions = await getPositions(); if (positions.length >= account.max_positions) return;
-  const held = new Set(positions.map(p => p.symbol)); const candidates = Array.from(priceStates.values()).filter(s => !held.has(s.symbol)); let best: { state: PriceState; signal: StrategySignal } | null = null;
-  for (const state of candidates) {
-    const sig = evaluateStrategy(state.history.map(x => x.price), { ...STRATEGY, minScore: profile.minScore });
-    if (sig.action === 'WAIT') continue;
-    if (!best || sig.score > best.signal.score || (sig.score === best.signal.score && sig.riskReward > best.signal.riskReward)) best = { state, signal: sig };
-  }
-  if (!best) return;
-  const { state, signal } = best, raw = state.price, slip = account.slippage_bps / 10000;
-  const price = round(raw * (1 + (signal.action === 'LONG' ? slip : -slip)), raw >= 100 ? 2 : 4);
-  const stopLoss = round(signal.action === 'LONG' ? signal.stopLoss * (1 - slip) : signal.stopLoss * (1 + slip), price >= 100 ? 2 : 4);
-  const takeProfit = round(signal.takeProfit, price >= 100 ? 2 : 4), riskPerUnit = Math.abs(price - stopLoss);
-  if (!riskPerUnit || signal.riskReward < STRATEGY.minRiskReward) return;
-  const riskBudget = account.equity * profile.riskPerTradePct / 100, riskSizedNotional = riskBudget * price / riskPerUnit;
-  const allocationCap = Math.min(account.max_allocation_pct, 20, profile.maxAllocationPct) / 100;
-  const targetNotional = round(Math.min(riskSizedNotional, account.equity * allocationCap * account.leverage), 2);
-  const margin = targetNotional / account.leverage;
-  if (margin > account.cash || targetNotional < 1) return;
-  const quantity = round(targetNotional / price, 8); if (quantity <= 0) return;
-  await execute(`INSERT INTO tp_positions (symbol,side,quantity,entry_price,current_price,notional,unrealized_pnl,stop_loss,take_profit,strategy,status) VALUES ($1,$2,$3,$4,$4,$5,0,$6,$7,$8,'OPEN');`, [state.symbol, signal.action, quantity, price, targetNotional, stopLoss, takeProfit, `${signal.strategy} ${signal.riskReward.toFixed(1)}R`]);
-  await execute(`UPDATE tp_account SET cash=cash-$1 WHERE id=1;`, [margin]);
-  lastEntryTick = tickCount;
-}
-
-export async function closePosition(positionId: string, exitPrice?: number, reason?: string): Promise<{ ok: boolean; message: string }> {
-  const rows = await query<Record<string, unknown>>(`SELECT * FROM tp_positions WHERE id=$1 AND status='OPEN';`, [positionId]); if (!rows.length) return { ok: false, message: 'Position not found or already closed.' };
-  const r = rows[0], pos = { id: String(r.id), symbol: String(r.symbol), side: r.side as 'LONG'|'SHORT', quantity: Number(r.quantity), entry_price: Number(r.entry_price), current_price: Number(r.current_price), notional: Number(r.notional), unrealized_pnl: Number(r.unrealized_pnl), stop_loss: Number(r.stop_loss), take_profit: Number(r.take_profit), strategy: String(r.strategy ?? 'Strategy'), opened_at: new Date(r.opened_at as string).toISOString() };
-  const ps = priceStates.get(pos.symbol), account = await getAccount(), rawExit = exitPrice ?? (ps ? ps.price : pos.current_price), slip = account.slippage_bps / 10000;
-  const exit = round(rawExit * (1 - (pos.side === 'LONG' ? slip : -slip)), pos.entry_price >= 100 ? 2 : 4);
-  const direction = pos.side === 'LONG' ? 1 : -1, gross = direction * (exit - pos.entry_price) * pos.quantity;
-  const fees = (pos.entry_price * pos.quantity + exit * pos.quantity) * (account.fee_bps / 10000), pnl = round(gross - fees, 2), returnPct = round(pnl / (pos.notional / Math.max(1, account.leverage)) * 100, 2);
-  const marginReturn = round(pos.notional / Math.max(1, account.leverage) + pnl, 2);
-  await execute(`INSERT INTO tp_trades (symbol,side,quantity,entry_price,exit_price,pnl,return_pct,strategy,status,opened_at,closed_at) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,'CLOSED',$9,now());`, [pos.symbol,pos.side,pos.quantity,pos.entry_price,exit,pnl,returnPct,pos.strategy,pos.opened_at]);
-  await execute(`DELETE FROM tp_positions WHERE id=$1;`, [pos.id]);
-  await execute(`UPDATE tp_account SET cash=cash+$1, realized_pnl=realized_pnl+$2 WHERE id=1;`, [marginReturn,pnl]);
-  if (pnl < 0) consecutiveLosses++; else consecutiveLosses = 0;
-  await recomputeEquity();
-  return { ok: true, message: `Position closed (${reason ?? 'Manual'}). Net PnL after fees/slippage: ${pnl.toFixed(2)}` };
-}
-
-async function takeSnapshot() {
-  if (!engineRunning) return;
-  try { const account = await getAccount(), positions = await getPositions(), openValue = positions.reduce((a,p)=>a+p.notional,0), unrealized = positions.reduce((a,p)=>a+p.unrealized_pnl,0); await execute(`INSERT INTO tp_snapshots (equity,cash,open_value,unrealized_pnl,realized_pnl,ts) VALUES ($1,$2,$3,$4,$5,now());`, [account.equity,account.cash,openValue,unrealized,account.realized_pnl]); } catch (err) { console.error('[engine-v5] snapshot error:', err); }
-}
-
-export async function closeAllPositions() { const positions = await getPositions(); for (const p of positions) await closePosition(p.id, undefined, 'Close All'); return { ok: true, message: `Closed ${positions.length} positions.` }; }
-export async function resetAccount() { if (engineRunning) await stopEngine(); await resetDatabase(); priceStates.clear(); tickCount=0; consecutiveLosses=0; lastEntryTick=-Infinity; tradeDayKey=currentDayKey(); sessionStartEquity=10000; return { ok: true, message: 'Account reset to $10,000.' }; }
-
-export async function getAiRecommendation(symbol?: string): Promise<AiRecommendation> {
-  seedPriceStates(); const state = symbol ? priceStates.get(symbol) : priceStates.get('BTC/USDT');
-  if (!state) return { symbol: symbol ?? 'BTC/USDT', action:'WAIT', confidence:0, threshold:75, entry:0, stop_loss:0, take_profit:0, risk_score:100, explanation:'No market data available.' };
-  const account = await getAccount(), threshold = clampScore(account.confidence_threshold_pct), signal = evaluateStrategy(state.history.map(x=>x.price), { ...STRATEGY, minScore: threshold });
-  const thresholdReason = signal.action === 'WAIT' && signal.confidence < threshold ? `Confidence ${signal.confidence}/100 below threshold ${threshold}/100.` : `Threshold ${threshold}/100.`;
-  return { symbol:state.symbol, action:signal.action, confidence:signal.confidence, threshold, entry:round(signal.entry,state.price>=100?2:4), stop_loss:round(signal.stopLoss,state.price>=100?2:4), take_profit:round(signal.takeProfit,state.price>=100?2:4), risk_score:Math.max(0,100-signal.score), explanation:`${signal.strategy}: ${signal.reasons.join('; ') || 'No qualifying setup.'}${signal.action !== 'WAIT' ? ` | ${signal.riskReward.toFixed(1)}R target.` : ''} | ${thresholdReason}` };
-}
+const STRATEGY={minScore:75,minRiskReward:2,maxRiskReward:6,atrStopMultiple:1,lookback:180,maxConsecutiveLosses:2,cooldownTicks:18,riskPerTradePct:0.35,maxAllocationPct:20,breakEvenAtR:1.25,trailAtR:2.5,trailLockR:1};
+const LOCKOUT_MS=24*60*60*1000;
+interface PriceState{symbol:string;price:number;base:number;vol:number;rng:()=>number;history:{ts:number;price:number}[];regimeDrift:number;regimeTicks:number}
+function mulberry32(seed:number){return function(){seed|=0;seed=(seed+0x6d2b79f5)|0;let t=Math.imul(seed^(seed>>>15),1|seed);t=(t+Math.imul(t^(t>>>7),61|t))^t;return((t^(t>>>14))>>>0)/4294967296;};}
+const priceStates=new Map<string,PriceState>();let tickCount=0,engineRunning=false,tickTimer:ReturnType<typeof setInterval>|null=null,snapshotTimer:ReturnType<typeof setInterval>|null=null,ticking=false;let consecutiveLosses=0,lastEntryTick=-Infinity,sessionStartEquity=10000,tradeDayKey='';
+const currentDayKey=()=>new Date().toISOString().slice(0,10);const round=(v:number,dp=2)=>{const f=10**dp;return Math.round(v*f)/f;};const clampScore=(v:number)=>Math.max(60,Math.min(95,Math.round(v)));
+async function resetDailyCountersIfNeeded(){const key=currentDayKey();if(tradeDayKey!==key){tradeDayKey=key;consecutiveLosses=0;sessionStartEquity=(await getAccount()).equity;}}
+function seedPriceStates(){if(priceStates.size)return;const now=Date.now();for(const s of SYMBOLS){const rng=mulberry32(Math.floor(s.base*1000)+17391);let price=s.base,regimeDrift=0,regimeTicks=0;const history:{ts:number;price:number}[]=[];for(let i=STRATEGY.lookback-1;i>=0;i--){regimeTicks++;if(regimeTicks>=70){regimeTicks=0;const r=rng();regimeDrift=r<0.42?(rng()>0.5?0.0011:-0.0011):0;}const meanReversion=((s.base-price)/s.base)*0.002,shock=(rng()-0.5)*2*s.vol;price=Math.max(0.0001,price*(1+regimeDrift+meanReversion+shock));history.push({ts:now-i*2000,price});}priceStates.set(s.symbol,{symbol:s.symbol,price,base:s.base,vol:s.vol,rng,history,regimeDrift,regimeTicks});}}
+function advancePrices(){seedPriceStates();for(const s of priceStates.values()){s.regimeTicks++;if(s.regimeTicks>=70){s.regimeTicks=0;const r=s.rng();s.regimeDrift=r<0.42?(s.rng()>0.5?0.0011:-0.0011):0;}const meanReversion=((s.base-s.price)/s.base)*0.002,shock=(s.rng()-0.5)*2*s.vol;s.price=Math.max(0.0001,s.price*(1+s.regimeDrift+meanReversion+shock));s.history.push({ts:Date.now(),price:s.price});if(s.history.length>400)s.history.shift();}tickCount++;}
+function riskProfile(riskLevel:string,threshold:number){const minScore=clampScore(threshold);if(riskLevel==='Conservative')return{minScore,riskPerTradePct:0.2,maxAllocationPct:15};if(riskLevel==='Aggressive')return{minScore,riskPerTradePct:0.5,maxAllocationPct:20};return{minScore,riskPerTradePct:STRATEGY.riskPerTradePct,maxAllocationPct:18};}
+export function getTickCount(){return tickCount;}export function isEngineRunning(){return engineRunning;}
+export function getMarketTicks():MarketTick[]{seedPriceStates();return Array.from(priceStates.values()).map(s=>{const n=s.history.length,prev=n>1?s.history[n-2].price:s.price;return{symbol:s.symbol,price:round(s.price,s.price>=100?2:4),change_pct:round((s.price-prev)/prev*100,2),ts:n?s.history[n-1].ts:Date.now()};});}
+export function getPriceHistory(symbol:string,points=180){seedPriceStates();const state=priceStates.get(symbol);return state?state.history.slice(-points):[];}
+export async function startEngine():Promise<{ok:boolean;message:string}>{if(engineRunning)return{ok:false,message:'Engine is already running. Duplicate start rejected.'};const account=await getAccount();if(account.bot_status==='RUNNING')return{ok:false,message:'Bot is already RUNNING. Duplicate start rejected.'};if(account.risk_pause_until&&new Date(account.risk_pause_until).getTime()>Date.now()){const mins=Math.ceil((new Date(account.risk_pause_until).getTime()-Date.now())/60000);return{ok:false,message:`Risk lockout active for ${mins} more minutes. Capital protection pause is 24 hours.`};}seedPriceStates();await resetDailyCountersIfNeeded();sessionStartEquity=account.equity;engineRunning=true;await execute(`UPDATE tp_account SET bot_status='RUNNING',started_at=now(),last_tick_at=now() WHERE id=1;`);tickTimer=setInterval(tick,2000);snapshotTimer=setInterval(takeSnapshot,10000);setTimeout(tick,100);return{ok:true,message:'Paper engine started with realistic costs, 20% position cap, 10x leverage ceiling and 24h loss lockout.'};}
+export async function stopEngine(){engineRunning=false;if(tickTimer)clearInterval(tickTimer);if(snapshotTimer)clearInterval(snapshotTimer);tickTimer=null;snapshotTimer=null;await execute(`UPDATE tp_account SET bot_status='STOPPED',last_tick_at=now() WHERE id=1;`);return{ok:true,message:'Paper bot stopped.'};}
+export async function restartEngine(){await stopEngine();await new Promise(r=>setTimeout(r,200));return startEngine();}
+async function recomputeEquity(){const account=await getAccount(),positions=await getPositions(),margin=positions.reduce((a,p)=>a+p.notional/Math.max(1,account.leverage),0),unrealized=positions.reduce((a,p)=>a+p.unrealized_pnl,0);await execute(`UPDATE tp_account SET equity=$1,total_pnl=$2 WHERE id=1;`,[round(account.cash+margin+unrealized,2),round(account.realized_pnl+unrealized,2)]);}
+async function triggerRiskPause(reason:string){const positions=await getPositions();for(const p of positions)await closePosition(p.id,undefined,`CAPITAL PROTECTION: ${reason}`);const until=new Date(Date.now()+LOCKOUT_MS).toISOString();engineRunning=false;if(tickTimer)clearInterval(tickTimer);if(snapshotTimer)clearInterval(snapshotTimer);tickTimer=null;snapshotTimer=null;await execute(`UPDATE tp_account SET bot_status='STOPPED',risk_pause_until=$1,last_tick_at=now() WHERE id=1;`,[until]);}
+async function tick(){if(!engineRunning||ticking)return;ticking=true;try{await resetDailyCountersIfNeeded();advancePrices();for(const pos of await getPositions()){const ps=priceStates.get(pos.symbol);if(!ps)continue;const px=round(ps.price,pos.entry_price>=100?2:4);await execute(`UPDATE tp_positions SET current_price=$1,unrealized_pnl=$2 WHERE id=$3;`,[px,calcUnrealizedPnl(pos,px),pos.id]);await manageRunner(pos,px);const sl=pos.side==='LONG'?px<=pos.stop_loss:px>=pos.stop_loss,tp=pos.side==='LONG'?px>=pos.take_profit:px<=pos.take_profit;if(sl||tp)await closePosition(pos.id,px,sl?'Stop Loss / Protected Runner':'Take Profit');}await recomputeEquity();const account=await getAccount(),drawdownPct=sessionStartEquity>0?Math.max(0,(sessionStartEquity-account.equity)/sessionStartEquity*100):0;if(drawdownPct>=account.loss_limit_pct){await triggerRiskPause(`loss limit ${account.loss_limit_pct.toFixed(2)}% reached`);return;}const positions=await getPositions(),profile=riskProfile(account.risk_level,account.confidence_threshold_pct);if(positions.length<account.max_positions&&tickCount-lastEntryTick>=STRATEGY.cooldownTicks)await tryOpenPosition(profile);await recomputeEquity();await execute(`UPDATE tp_account SET last_tick_at=now() WHERE id=1;`);}catch(err){console.error('[engine-v5] tick error:',err);}finally{ticking=false;}}
+function calcUnrealizedPnl(pos:Position,currentPrice:number){return round((pos.side==='LONG'?1:-1)*(currentPrice-pos.entry_price)*pos.quantity,2);}
+async function manageRunner(pos:Position,currentPrice:number){const initialRisk=Math.abs(pos.entry_price-pos.stop_loss);if(!initialRisk)return;const favorable=pos.side==='LONG'?currentPrice-pos.entry_price:pos.entry_price-currentPrice,r=favorable/initialRisk;if(r<STRATEGY.breakEvenAtR)return;const newStop=r>=STRATEGY.trailAtR?(pos.side==='LONG'?Math.max(pos.stop_loss,pos.entry_price+initialRisk*STRATEGY.trailLockR):Math.min(pos.stop_loss,pos.entry_price-initialRisk*STRATEGY.trailLockR)):pos.entry_price,improves=pos.side==='LONG'?newStop>pos.stop_loss:newStop<pos.stop_loss;if(improves)await execute(`UPDATE tp_positions SET stop_loss=$1 WHERE id=$2;`,[round(newStop,pos.entry_price>=100?2:4),pos.id]);}
+async function tryOpenPosition(profile:ReturnType<typeof riskProfile>){const account=await getAccount(),positions=await getPositions();if(positions.length>=account.max_positions)return;const held=new Set(positions.map(p=>p.symbol)),candidates=Array.from(priceStates.values()).filter(s=>!held.has(s.symbol));let best:{state:PriceState;signal:StrategySignal}|null=null;for(const state of candidates){const sig=evaluateStrategy(state.history.map(x=>x.price),{...STRATEGY,minScore:profile.minScore});if(sig.action==='WAIT')continue;if(!best||sig.score>best.signal.score||(sig.score===best.signal.score&&sig.riskReward>best.signal.riskReward))best={state,signal:sig};}if(!best)return;const{state,signal}=best,raw=state.price,slip=account.slippage_bps/10000,price=round(raw*(1+(signal.action==='LONG'?slip:-slip)),raw>=100?2:4),stopLoss=round(signal.action==='LONG'?signal.stopLoss*(1-slip):signal.stopLoss*(1+slip),price>=100?2:4),takeProfit=round(signal.takeProfit,price>=100?2:4),riskPerUnit=Math.abs(price-stopLoss);if(!riskPerUnit||signal.riskReward<STRATEGY.minRiskReward)return;const riskBudget=account.equity*profile.riskPerTradePct/100,riskSizedNotional=riskBudget*price/riskPerUnit,allocationCap=Math.min(account.max_allocation_pct,20,profile.maxAllocationPct)/100,targetNotional=round(Math.min(riskSizedNotional,account.equity*allocationCap),2),margin=targetNotional/Math.max(1,account.leverage);if(margin>account.cash||targetNotional<1)return;const quantity=round(targetNotional/price,8);if(quantity<=0)return;await execute(`INSERT INTO tp_positions (symbol,side,quantity,entry_price,current_price,notional,unrealized_pnl,stop_loss,take_profit,strategy,status) VALUES ($1,$2,$3,$4,$4,$5,0,$6,$7,$8,'OPEN');`,[state.symbol,signal.action,quantity,price,targetNotional,stopLoss,takeProfit,`${signal.strategy} ${signal.riskReward.toFixed(1)}R`]);await execute(`UPDATE tp_account SET cash=cash-$1 WHERE id=1;`,[margin]);lastEntryTick=tickCount;}
+export async function closePosition(positionId:string,exitPrice?:number,reason?:string):Promise<{ok:boolean;message:string}>{const rows=await query<Record<string,unknown>>(`SELECT * FROM tp_positions WHERE id=$1 AND status='OPEN';`,[positionId]);if(!rows.length)return{ok:false,message:'Position not found or already closed.'};const r=rows[0],pos={id:String(r.id),symbol:String(r.symbol),side:r.side as 'LONG'|'SHORT',quantity:Number(r.quantity),entry_price:Number(r.entry_price),current_price:Number(r.current_price),notional:Number(r.notional),unrealized_pnl:Number(r.unrealized_pnl),stop_loss:Number(r.stop_loss),take_profit:Number(r.take_profit),strategy:String(r.strategy??'Strategy'),opened_at:new Date(r.opened_at as string).toISOString()},ps=priceStates.get(pos.symbol),account=await getAccount(),rawExit=exitPrice??(ps?ps.price:pos.current_price),slip=account.slippage_bps/10000,exit=round(rawExit*(1-(pos.side==='LONG'?slip:-slip)),pos.entry_price>=100?2:4),direction=pos.side==='LONG'?1:-1,gross=direction*(exit-pos.entry_price)*pos.quantity,fees=(pos.entry_price*pos.quantity+exit*pos.quantity)*(account.fee_bps/10000),pnl=round(gross-fees,2),returnPct=round(pnl/(pos.notional/Math.max(1,account.leverage))*100,2),marginReturn=round(pos.notional/Math.max(1,account.leverage)+pnl,2);await execute(`INSERT INTO tp_trades (symbol,side,quantity,entry_price,exit_price,pnl,return_pct,strategy,status,opened_at,closed_at) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,'CLOSED',$9,now());`,[pos.symbol,pos.side,pos.quantity,pos.entry_price,exit,pnl,returnPct,pos.strategy,pos.opened_at]);await execute(`DELETE FROM tp_positions WHERE id=$1;`,[pos.id]);await execute(`UPDATE tp_account SET cash=cash+$1,realized_pnl=realized_pnl+$2 WHERE id=1;`,[marginReturn,pnl]);if(pnl<0)consecutiveLosses++;else consecutiveLosses=0;await recomputeEquity();return{ok:true,message:`Position closed (${reason??'Manual'}). Net PnL after fees/slippage: ${pnl.toFixed(2)}`};}
+async function takeSnapshot(){if(!engineRunning)return;try{const account=await getAccount(),positions=await getPositions(),openValue=positions.reduce((a,p)=>a+p.notional,0),unrealized=positions.reduce((a,p)=>a+p.unrealized_pnl,0);await execute(`INSERT INTO tp_snapshots (equity,cash,open_value,unrealized_pnl,realized_pnl,ts) VALUES ($1,$2,$3,$4,$5,now());`,[account.equity,account.cash,openValue,unrealized,account.realized_pnl]);}catch(err){console.error('[engine-v5] snapshot error:',err);}}
+export async function closeAllPositions(){const positions=await getPositions();for(const p of positions)await closePosition(p.id,undefined,'Close All');return{ok:true,message:`Closed ${positions.length} positions.`};}
+export async function resetAccount(){if(engineRunning)await stopEngine();await resetDatabase();priceStates.clear();tickCount=0;consecutiveLosses=0;lastEntryTick=-Infinity;tradeDayKey=currentDayKey();sessionStartEquity=10000;return{ok:true,message:'Account reset to $10,000.'};}
+export async function getAiRecommendation(symbol?:string):Promise<AiRecommendation>{seedPriceStates();const state=symbol?priceStates.get(symbol):priceStates.get('BTC/USDT');if(!state)return{symbol:symbol??'BTC/USDT',action:'WAIT',confidence:0,threshold:75,entry:0,stop_loss:0,take_profit:0,risk_score:100,explanation:'No market data available.'};const account=await getAccount(),threshold=clampScore(account.confidence_threshold_pct),signal=evaluateStrategy(state.history.map(x=>x.price),{...STRATEGY,minScore:threshold}),thresholdReason=signal.action==='WAIT'&&signal.confidence<threshold?`Confidence ${signal.confidence}/100 below threshold ${threshold}/100.`:`Threshold ${threshold}/100.`;return{symbol:state.symbol,action:signal.action,confidence:signal.confidence,threshold,entry:round(signal.entry,state.price>=100?2:4),stop_loss:round(signal.stopLoss,state.price>=100?2:4),take_profit:round(signal.takeProfit,state.price>=100?2:4),risk_score:Math.max(0,100-signal.score),explanation:`${signal.strategy}: ${signal.reasons.join('; ')||'No qualifying setup.'}${signal.action!=='WAIT'?` | ${signal.riskReward.toFixed(1)}R target.`:''} | ${thresholdReason}`};}
