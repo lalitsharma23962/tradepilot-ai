@@ -16,7 +16,7 @@ export const STRATEGIES=[
  {id:'momentum-21',name:'Momentum 21-Bar'},{id:'momentum-72',name:'Momentum 72-Bar'},{id:'hybrid',name:'Regime Hybrid'},
  {id:'vol-contraction',name:'Volatility Contraction Breakout'},{id:'atr-channel',name:'ATR Channel Trend'},{id:'zscore',name:'Z-Score Mean Reversion'}
 ] as const;
-const MIN_HISTORY=20000,MIN_TRAIN=30,MIN_VAL=20,MIN_TEST=30,MIN_PF=1.05,MAX_DD=20,MAX_MC=45,LOOKBACK=240;
+const MIN_HISTORY=20000,MIN_TRAIN=30,MIN_VAL=20,MIN_TEST=30,MIN_PF=1.05,MAX_DD=20,MAX_MC=45,LOOKBACK=240,MIN_FOLD_TRADES=30;
 const mean=(x:number[])=>x.length?x.reduce((a,b)=>a+b,0)/x.length:0;
 const std=(x:number[])=>{const m=mean(x);return x.length>1?Math.sqrt(mean(x.map(v=>(v-m)**2))):0;};
 const ema=(x:number[],p:number)=>{if(!x.length)return 0;const k=2/(p+1);let e=x[0];for(let i=1;i<x.length;i++)e=x[i]*k+e*(1-k);return e;};
@@ -36,7 +36,6 @@ function signal(id:string,c:Candle[],cfg:BacktestConfig):1|-1|0{
  const up=e20>e50&&e50>e100,down=e20<e50&&e50<e100,s12=slope(p.slice(-12))/last,s36=slope(p.slice(-36))/last,m21=last/p[Math.max(0,p.length-22)]-1,m72=last/p[Math.max(0,p.length-73)]-1;
  const h20=hi(prior,20),l20=lo(prior,20),h30=hi(prior,30),l30=lo(prior,30),h40=hi(prior,40),l40=lo(prior,40),h55=hi(prior,55),l55=lo(prior,55);
  const mid=mean(p.slice(-20)),sd=std(p.slice(-20)),upper=mid+2*sd,lower=mid-2*sd,macd=ema(p,12)-ema(p,26),macdPrev=ema(p.slice(0,-1),12)-ema(p.slice(0,-1),26),af=atr(c,10),as=atr(c,40),contract=af>0&&as>0&&af/as<.72;
- const costAware=v>=Math.max(.00045,((10+2)*2/10000)*.55)&&v<=.025;
  switch(id){
   case'ema-trend':return up&&last>e9&&s36>0?1:down&&last<e9&&s36<0?-1:0;
   case'breakout-20':return last>h20&&v>.0015?1:last<l20&&v>.0015?-1:0;
@@ -60,18 +59,18 @@ function signal(id:string,c:Candle[],cfg:BacktestConfig):1|-1|0{
 
 function summarize(id:string,pnls:number[],initial:number,dd:number,tr:number[]):StrategyResult{
  const wins=pnls.filter(x=>x>0).length,losses=pnls.filter(x=>x<0).length,gp=pnls.filter(x=>x>0).reduce((a,b)=>a+b,0),gl=Math.abs(pnls.filter(x=>x<0).reduce((a,b)=>a+b,0)),pf=gl?gp/gl:gp>0?99:0,net=pnls.reduce((a,b)=>a+b,0),ret=initial?net/initial*100:0,wr=pnls.length?wins/pnls.length*100:0,avg=pnls.length?mean(pnls):0;
- const rr=tr.map(x=>x/100),m=mean(rr),sd=std(rr),neg=std(rr.filter(x=>x<0)),sh=sd?Math.sqrt(Math.max(1,tr.length))*m/sd:0,so=neg?Math.sqrt(Math.max(1,tr.length))*m/neg:0,cal=dd?ret/dd:ret>0?99:0,turn=initial?pnls.reduce((a,b)=>a+Math.abs(b),0)/initial*100:0,penalty=pnls.length<MIN_TRAIN?(MIN_TRAIN-pnls.length)*.5:0;
- const score=ret+Math.min(pf,5)*2.5+sh*2+so*.75+wr/25+cal*.25-dd*.8-penalty;
+ const rr=tr.map(x=>x/100),m=mean(rr),sd=std(rr),neg=std(rr.filter(x=>x<0)),sh=sd?Math.sqrt(Math.max(1,tr.length))*m/sd:0,so=neg?Math.sqrt(Math.max(1,tr.length))*m/neg:0,cal=dd?ret/dd:ret>0?99:0,turn=initial?pnls.reduce((a,b)=>a+Math.abs(b),0)/initial*100:0,penalty=pnls.length<MIN_FOLD_TRADES?(MIN_FOLD_TRADES-pnls.length)*.5:0;
+ const rawScore=ret+Math.min(pf,5)*2.5+sh*2+so*.75+wr/25+cal*.25-dd*.8-penalty;
+ const sampleConfidence=Math.min(1,pnls.length/MIN_FOLD_TRADES),score=rawScore*sampleConfidence;
  return{id,name:STRATEGIES.find(s=>s.id===id)?.name??id,trades:pnls.length,wins,losses,winRate:wr,profitFactor:pf,netPnl:net,returnPct:ret,maxDrawdownPct:dd,avgTrade:avg,score,tradeReturnsPct:tr,sharpe:sh,sortino:so,calmar:cal,expectancy:avg,turnoverPct:turn};
 }
 function closePnl(raw:number,p:{side:1|-1;entry:number;qty:number},fee:number,slip:number){const exit=raw*(1-p.side*slip),gross=p.side*(exit-p.entry)*p.qty,fees=(Math.abs(p.entry*p.qty)+Math.abs(exit*p.qty))*fee;return gross-fees;}
 function simulate(c:Candle[],id:string,cfg:BacktestConfig,start:number,end:number):StrategyResult{
  let equity=cfg.initialCapital,peak=equity,maxDd=0;const pnls:number[]=[],tr:number[]=[];let open:{side:1|-1;entry:number;stop:number;target:number;qty:number;bars:number}|null=null;const fee=cfg.feeBps/10000,slip=cfg.slippageBps/10000;
- const roundTripPct=2*fee+2*slip;
- const MIN_R_OVER_COST=4;
+ const roundTripPct=2*fee+2*slip,MIN_R_OVER_COST=4;
  for(let i=Math.max(150,start);i<end;i++){const bar=c[i];let closed=false;if(open){open.bars++;const stop=open.side===1?bar.low<=open.stop:bar.high>=open.stop,tp=open.side===1?bar.high>=open.target:bar.low<=open.target;if(stop||tp||open.bars>=cfg.maxBarsInTrade){const raw=stop?open.stop:tp?open.target:bar.close,pnl=closePnl(raw,open,fee,slip);tr.push(equity?100*pnl/equity:0);pnls.push(pnl);equity+=pnl;open=null;closed=true;}}
   if(!open&&!closed){const w=c.slice(Math.max(0,i-LOOKBACK),i),side=signal(id,w,cfg);if(side){const entry=bar.open*(1+side*slip),risk=Math.max(atr(w)*cfg.stopAtr,entry*roundTripPct*MIN_R_OVER_COST),rr=id==='production'?1.8:cfg.rewardRisk,stop=entry-side*risk,target=entry+side*(risk*rr+entry*roundTripPct),riskBudget=Math.max(0,equity)*cfg.riskPerTradePct/100,riskQty=riskBudget/risk,maxNotional=Math.max(0,equity)*cfg.maxPositionPct/100*Math.max(1,cfg.leverage),requestedNotional=riskQty*entry;
-    if(requestedNotional<=maxNotional){const qty=riskQty;if(qty>0)open={side,entry,stop,target,qty,bars:0};}
+    if(requestedNotional<=maxNotional&&riskQty>0)open={side,entry,stop,target,qty:riskQty,bars:0};
   }}
   peak=Math.max(peak,equity);maxDd=Math.max(maxDd,peak?(peak-equity)/peak*100:0);
  }
@@ -82,17 +81,18 @@ export async function fetchHistoricalCandles(symbol='BTCUSDT',interval='5m',limi
 function mc(ret:number[],runs=5000,seed=0x7a11){if(!ret.length)return{simulations:runs,probabilityOfLoss:100,medianReturnPct:0,p05ReturnPct:0,p95MaxDrawdownPct:0};let s=seed>>>0;const rnd=()=>{s=(1664525*s+1013904223)>>>0;return s/4294967296};const finals:number[]=[],dds:number[]=[];for(let k=0;k<runs;k++){let eq=1,peak=1,dd=0;for(let i=0;i<ret.length;i++){const r=ret[Math.floor(rnd()*ret.length)]/100;eq*=1+r;peak=Math.max(peak,eq);dd=Math.max(dd,(peak-eq)/peak*100);}finals.push((eq-1)*100);dds.push(dd);}finals.sort((a,b)=>a-b);dds.sort((a,b)=>a-b);return{simulations:runs,probabilityOfLoss:finals.filter(x=>x<0).length/runs*100,medianReturnPct:finals[Math.floor(runs*.5)]??0,p05ReturnPct:finals[Math.floor(runs*.05)]??0,p95MaxDrawdownPct:dds[Math.floor(runs*.95)]??0};}
 function aggregateFolds(id:string,folds:StrategyResult[]):StrategyResult{
  if(!folds.length)return summarize(id,[],10000,0,[]);
- const trades=folds.reduce((a,b)=>a+b.trades,0),wins=folds.reduce((a,b)=>a+b.wins,0),losses=folds.reduce((a,b)=>a+b.losses,0),returns=folds.flatMap(f=>f.tradeReturnsPct),avgReturn=mean(folds.map(f=>f.returnPct)),avgPf=mean(folds.map(f=>f.profitFactor)),avgDd=mean(folds.map(f=>f.maxDrawdownPct)),stability=folds.filter(f=>f.returnPct>0&&f.profitFactor>=1).length/folds.length;
- return {...folds[folds.length-1],trades,wins,losses,winRate:trades?wins/trades*100:0,returnPct:avgReturn,profitFactor:avgPf,maxDrawdownPct:avgDd,tradeReturnsPct:returns,score:mean(folds.map(f=>f.score))+stability*3};
+ const trades=folds.reduce((a,b)=>a+b.trades,0),wins=folds.reduce((a,b)=>a+b.wins,0),losses=folds.reduce((a,b)=>a+b.losses,0),returns=folds.flatMap(f=>f.tradeReturnsPct),avgReturn=mean(folds.map(f=>f.returnPct)),avgPf=mean(folds.map(f=>f.profitFactor)),avgDd=mean(folds.map(f=>f.maxDrawdownPct)),stability=folds.filter(f=>f.returnPct>0&&f.profitFactor>=MIN_PF&&f.trades>=MIN_FOLD_TRADES).length/folds.length;
+ const base={...folds[folds.length-1],trades,wins,losses,winRate:trades?wins/trades*100:0,returnPct:avgReturn,profitFactor:avgPf,maxDrawdownPct:avgDd,tradeReturnsPct:returns};
+ return{...base,score:mean(folds.map(f=>f.score))+stability*3};
 }
 export async function runValidation(symbol='BTCUSDT',interval='5m',cfg:Partial<BacktestConfig>={},selectedStrategyId?:string):Promise<ValidationReport>{
  const config={...DEFAULT_BACKTEST_CONFIG,...cfg},candles=await fetchHistoricalCandles(symbol,interval,MAX_HISTORY_BARS);if(candles.length<MIN_HISTORY)throw new Error(`Need at least ${MIN_HISTORY.toLocaleString()} completed candles; received ${candles.length.toLocaleString()}.`);
  const ms=intervalMs(interval),gaps=candles.slice(1).filter((x,i)=>x.openTime-candles[i].openTime!==ms).length,dup=candles.length-new Set(candles.map(x=>x.openTime)).size,duration=(candles[candles.length-1].openTime-candles[0].openTime)/86400000;
- const testStart=Math.floor(candles.length*.5),preOos=candles.slice(0,testStart),trainBars=Math.floor(preOos.length*.6),validationBars=preOos.length-trainBars,testBars=candles.length-testStart;
+ const testStart=Math.floor(candles.length*.5),preOos=candles.slice(0,testStart),trainBars=Math.floor(preOos.length/3),validationBars=trainBars,testBars=candles.length-testStart;
  const candidates=STRATEGIES.map(s=>s.id),foldsPerStrategy=new Map<string,StrategyResult[]>();
- for(const id of candidates){const folds:StrategyResult[]=[];const windows=[[Math.floor(trainBars*.45),Math.floor(trainBars*.7)],[Math.floor(trainBars*.55),Math.floor(trainBars*.85)],[Math.floor(trainBars*.7),preOos.length]];for(const [a,b] of windows){if(b-a<MIN_VAL)continue;folds.push(simulate(candles,id,config,a,b));}foldsPerStrategy.set(id,folds);}
+ for(const id of candidates){const folds:StrategyResult[]=[];const a0=0,a1=trainBars,a2=trainBars*2,a3=preOos.length;for(const [a,b] of [[a0,a1],[a1,a2],[a2,a3]] as [number,number][]){if(b-a<MIN_VAL)continue;folds.push(simulate(candles,id,config,a,b));}foldsPerStrategy.set(id,folds);}
  const ranked=STRATEGIES.map(s=>aggregateFolds(s.id,foldsPerStrategy.get(s.id)??[])).sort((a,b)=>b.score-a.score);
- const stable=ranked.filter(r=>{const folds=foldsPerStrategy.get(r.id)??[];return folds.length>=3&&folds.every(f=>f.trades>=MIN_VAL&&f.returnPct>0&&f.profitFactor>=MIN_PF&&f.maxDrawdownPct<=MAX_DD);});
+ const stable=ranked.filter(r=>{const folds=foldsPerStrategy.get(r.id)??[];return folds.length===3&&folds.every(f=>f.trades>=MIN_FOLD_TRADES&&f.returnPct>0&&f.profitFactor>=MIN_PF&&f.maxDrawdownPct<=MAX_DD);});
  const stableIds=new Set(stable.map(r=>r.id));
  const chosenId=selectedStrategyId&&stableIds.has(selectedStrategyId)?selectedStrategyId:stable[0]?.id??ranked[0]?.id;
  const selected=STRATEGIES.find(s=>s.id===chosenId)??STRATEGIES[0];
@@ -106,5 +106,5 @@ export async function runValidation(symbol='BTCUSDT',interval='5m',cfg:Partial<B
  if(test.maxDrawdownPct>MAX_DD)reasons.push(`Out-of-sample max drawdown ${test.maxDrawdownPct.toFixed(2)}% exceeds ${MAX_DD.toFixed(0)}%.`);
  if(monteCarlo.probabilityOfLoss>MAX_MC)reasons.push(`Monte Carlo loss probability ${monteCarlo.probabilityOfLoss.toFixed(1)}% exceeds ${MAX_MC.toFixed(0)}%.`);
  const gate:ValidationGate={status:reasons.length?'REJECTED':'VALIDATED',reasons,minimumTestTrades:MIN_TEST,minimumProfitFactor:MIN_PF,minimumTestReturnPct:0,maximumTestDrawdownPct:MAX_DD,maximumMonteCarloLossProbability:MAX_MC};
- return{symbol,interval,candles:candles.length,dataQuality:{startTime:candles[0].openTime,endTime:candles[candles.length-1].openTime,durationDays:duration,expectedIntervalMinutes:ms/60000,gaps,duplicateTimestamps:dup},costs:{feeBps:config.feeBps,slippageBps:config.slippageBps},strategies:ranked,walkForward:{trainBars,validationBars,testBars,selectedStrategy:selected.name,validation,test},monteCarlo,gate,generatedAt:new Date().toISOString(),research:{asOf:new Date().toISOString(),dataWindowBars:candles.length,selectionMethod:'Three-fold pre-OOS stability filter; a candidate must be profitable with PF >= 1.05 in every pre-OOS fold before it can be auto-selected; final 50% remains untouched OOS',coverage:['fees','slippage','walk-forward','three-fold stability','Monte Carlo']}};
+ return{symbol,interval,candles:candles.length,dataQuality:{startTime:candles[0].openTime,endTime:candles[candles.length-1].openTime,durationDays:duration,expectedIntervalMinutes:ms/60000,gaps,duplicateTimestamps:dup},costs:{feeBps:config.feeBps,slippageBps:config.slippageBps},strategies:ranked,walkForward:{trainBars,validationBars,testBars,selectedStrategy:selected.name,validation,test},monteCarlo,gate,generatedAt:new Date().toISOString(),research:{asOf:new Date().toISOString(),dataWindowBars:candles.length,selectionMethod:'Three non-overlapping pre-OOS folds; each candidate must have at least 30 trades, positive return, PF >= 1.05 and max drawdown <= 20% in every fold before it can be auto-selected; final 50% remains untouched OOS',coverage:['fees','slippage','walk-forward','non-overlapping three-fold stability','Monte Carlo']}};
 }
