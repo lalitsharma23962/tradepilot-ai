@@ -31,10 +31,6 @@ const DEFAULT_CONFIG: StrategyConfig = {
   strategyLimit: 10,
 };
 
-// Every profile is calibrated to a 100-point scale. The previous weights
-// topped out at 82 points unless a rare compression condition added 8 more,
-// while the validation threshold was 85. That unintentionally made most
-// otherwise valid setups impossible to qualify.
 const PROFILES = [
   { name: 'Trend Breakout', trend: 30, momentum: 20, trigger: 32, volatility: 18, extensionPenalty: 16 },
   { name: 'Trend Pullback', trend: 32, momentum: 18, trigger: 30, volatility: 20, extensionPenalty: 15 },
@@ -108,6 +104,67 @@ function waitSignal(entry: number, reasons: string[], score = 0): StrategySignal
   return { action: 'WAIT', score: normalized, confidence: normalized, strategy: 'No Trade', entry, stopLoss: entry, takeProfit: entry, riskReward: 0, reasons };
 }
 
+/**
+ * Production gate: deliberately narrower than the experimental profile set.
+ * A trade must have trend alignment, momentum, a fresh 20-bar breakout and
+ * sane volatility simultaneously. This avoids turning an 85/100 score into
+ * permission to trade on a stale EMA reclaim or a single weak condition.
+ */
+function scoreProduction(prices: number[], cfg: StrategyConfig): StrategySignal {
+  const clean = prices.filter((p) => Number.isFinite(p) && p > 0).slice(-cfg.lookback);
+  const entry = clean.length ? clean[clean.length - 1] : 0;
+  if (clean.length < 120 || entry <= 0) return waitSignal(entry, ['Not enough history']);
+
+  const ema20 = ema(clean, 20), ema50 = ema(clean, 50), ema100 = ema(clean, 100);
+  const atr = atrLike(clean, 20);
+  const volatility = atr / entry;
+  const momentum = slope(clean.slice(-12)) / entry;
+  const momentumThreshold = Math.max(volatility * 0.12, 0.00025);
+  const currentRsi = rsi(clean, 14);
+  const prior = clean.slice(0, -1);
+  const high20 = high(prior, 20), low20 = low(prior, 20);
+  const medium = clean.slice(-30), mediumStd = std(medium);
+  const z = mediumStd > 0 ? (entry - mean(medium)) / mediumStd : 0;
+
+  const longTrend = ema20 > ema50 && ema50 > ema100;
+  const shortTrend = ema20 < ema50 && ema50 < ema100;
+  const longMomentum = momentum > momentumThreshold;
+  const shortMomentum = momentum < -momentumThreshold;
+  const longBreak = entry > high20 + atr * 0.05;
+  const shortBreak = entry < low20 - atr * 0.05;
+  const saneVolatility = volatility >= 0.001 && volatility <= 0.008;
+  const longNotExtended = currentRsi >= 52 && currentRsi <= 70 && z < 2;
+  const shortNotExtended = currentRsi >= 30 && currentRsi <= 48 && z > -2;
+
+  const longConfirmed = longTrend && longMomentum && longBreak && saneVolatility && longNotExtended;
+  const shortConfirmed = shortTrend && shortMomentum && shortBreak && saneVolatility && shortNotExtended;
+  if (!longConfirmed && !shortConfirmed) {
+    const partial = Math.round((longTrend || shortTrend ? 25 : 0) + (longMomentum || shortMomentum ? 20 : 0) + (longBreak || shortBreak ? 25 : 0) + (saneVolatility ? 15 : 0));
+    return waitSignal(entry, ['Production confirmation incomplete'], partial);
+  }
+
+  const side: Side = longConfirmed ? 'LONG' : 'SHORT';
+  const stopDistance = Math.max(atr * cfg.atrStopMultiple, entry * 0.0015);
+  const riskReward = clamp(2.2, cfg.minRiskReward, cfg.maxRiskReward);
+  const stopLoss = side === 'LONG' ? entry - stopDistance : entry + stopDistance;
+  const takeProfit = side === 'LONG' ? entry + stopDistance * riskReward : entry - stopDistance * riskReward;
+  const reasons = side === 'LONG'
+    ? ['bullish EMA regime', 'confirmed momentum', 'fresh 20-bar breakout', 'sane volatility', 'not overextended']
+    : ['bearish EMA regime', 'confirmed momentum', 'fresh 20-bar breakdown', 'sane volatility', 'not overextended'];
+
+  return {
+    action: side,
+    score: 100,
+    confidence: 100,
+    strategy: 'Production Breakout v5',
+    entry,
+    stopLoss,
+    takeProfit,
+    riskReward,
+    reasons,
+  };
+}
+
 function scoreProfile(prices: number[], cfg: StrategyConfig, profile: typeof PROFILES[number]): StrategySignal {
   const clean = prices.filter((p) => Number.isFinite(p) && p > 0).slice(-cfg.lookback);
   const entry = clean.length ? clean[clean.length - 1] : 0;
@@ -173,11 +230,13 @@ function scoreProfile(prices: number[], cfg: StrategyConfig, profile: typeof PRO
 
 export function evaluateStrategy(prices: number[], config: Partial<StrategyConfig> = {}): StrategySignal {
   const cfg = { ...DEFAULT_CONFIG, ...config };
+  const production = scoreProduction(prices, cfg);
+  if (production.action !== 'WAIT' && production.score >= cfg.minScore) return production;
+
   const limit = Math.min(10, Math.max(1, Math.round(cfg.strategyLimit ?? 10)));
   const signals = PROFILES.slice(0, limit).map((profile) => scoreProfile(prices, cfg, profile)).filter((signal) => signal.action !== 'WAIT');
   if (!signals.length) {
-    const fallback = scoreProfile(prices, cfg, PROFILES[0]);
-    return fallback.action === 'WAIT' ? fallback : waitSignal(fallback.entry, ['No strategy passed the complete filter set'], fallback.score);
+    return production.action === 'WAIT' ? production : waitSignal(production.entry, ['No strategy passed the complete filter set'], production.score);
   }
   return signals.sort((a, b) => b.score - a.score || b.riskReward - a.riskReward)[0];
 }
