@@ -132,18 +132,26 @@ function monteCarlo(returnsPct:number[],simulations=5000,seed=0x51a7):Validation
 
 function buildQuality(candles:Candle[],interval:string){const expected=intervalToMs(interval),gaps=candles.slice(1).filter((c,i)=>c.openTime-candles[i].openTime!==expected).length,duplicates=candles.length-new Set(candles.map(c=>c.openTime)).size;return{startTime:candles[0]?.openTime??0,endTime:candles[candles.length-1]?.openTime??0,durationDays:candles.length?(candles[candles.length-1].openTime-candles[0].openTime)/86400000:0,expectedIntervalMinutes:expected/60000,gaps,duplicateTimestamps:duplicates};}
 
+const validationSelectionScore=(train:StrategyResult,validation:StrategyResult)=>{
+ const consistencyPenalty=Math.max(0,train.score-validation.score)*0.25;
+ return validation.score*0.7+train.score*0.3-consistencyPenalty;
+};
+
 export async function runValidation(symbol='BTCUSDT',interval='5m',cfg:Partial<BacktestConfig>={}):Promise<ValidationReport>{
  const config={...DEFAULT_BACKTEST_CONFIG,...cfg,maxPositionPct:clamp(cfg.maxPositionPct??20,1,20),leverage:clamp(cfg.leverage??10,1,10),riskPerTradePct:clamp(cfg.riskPerTradePct??0.25,0.05,1)};
  const candles=await fetchHistoricalCandles(symbol,interval,20000);if(candles.length<MIN_HISTORY_BARS)throw new Error(`Validation requires at least ${MIN_HISTORY_BARS.toLocaleString()} completed historical candles; received ${candles.length.toLocaleString()}.`);
- // 50/20/30 keeps a meaningful training set while reserving a larger untouched
- // out-of-sample window. This fixes the previous 60/20/20 split that could leave
- // an otherwise viable strategy with fewer than the required 30 test trades.
- const trainEnd=Math.floor(candles.length*.5),validationEnd=Math.floor(candles.length*.7);
+ // 35/15/50 gives the selection stages enough history while reserving half the data
+ // for one untouched out-of-sample test. Strategy selection happens only on train+validation;
+ // the test window is never used to choose a strategy.
+ const trainEnd=Math.floor(candles.length*.35),validationEnd=Math.floor(candles.length*.50);
  const trainResults=STRATEGIES.map(s=>simulateRange(candles,s.id,config,120,trainEnd));
- const eligibleTrain=trainResults.filter(r=>r.trades>=MIN_TRAIN_TRADES).sort((a,b)=>b.score-a.score);
- const selectedTrain=eligibleTrain[0]??trainResults.slice().sort((a,b)=>b.score-a.score)[0];
+ const eligibleTrain=trainResults.filter(r=>r.trades>=MIN_TRAIN_TRADES);
+ const validationCandidates=eligibleTrain.map(train=>({train,validation:simulateRange(candles,train.id,config,trainEnd,validationEnd)})).filter(x=>x.validation.trades>=MIN_VALIDATION_TRADES);
+ const selectedCandidate=validationCandidates.slice().sort((a,b)=>validationSelectionScore(b.train,b.validation)-validationSelectionScore(a.train,a.validation))[0];
+ const selectedTrain=selectedCandidate?.train??eligibleTrain.slice().sort((a,b)=>b.score-a.score)[0]??trainResults.slice().sort((a,b)=>b.score-a.score)[0];
  const selectedId=selectedTrain?.id??'production';
- const validation=simulateRange(candles,selectedId,config,trainEnd,validationEnd);
+ const validation=selectedCandidate?.validation??simulateRange(candles,selectedId,config,trainEnd,validationEnd);
+ // IMPORTANT: this is the only time the selected strategy is evaluated on OOS data.
  const testResult=simulateRange(candles,selectedId,config,validationEnd,candles.length);
  const fullResults=trainResults.map(r=>r.id==='production'?simulateProductionRange(candles,config,120,candles.length):simulateRange(candles,r.id,config,120,candles.length)).sort((a,b)=>b.score-a.score);
  const mc=monteCarlo(testResult.tradeReturnsPct),reasons:string[]=[];
