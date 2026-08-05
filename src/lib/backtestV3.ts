@@ -28,10 +28,6 @@ const z=(x:number[],n=40)=>{const s=x.slice(-n),m=mean(s),d=std(s);return d?(s[s
 
 function signal(id:string,c:Candle[],cfg:BacktestConfig):1|-1|0{
  if(c.length<150)return 0;
- // Critical parity fix: the production validator now calls the exact same
- // close-only production strategy used by the live/paper engine. Previously
- // backtestV3 had a separate hand-written production branch, so a strategy
- // could pass validation under rules that differed from live execution.
  if(id==='production'){
   const s=evaluateProductionStrategy(c.map(x=>x.close),{minScore:70,lookback:240,feeBps:cfg.feeBps,slippageBps:cfg.slippageBps});
   return s.action==='LONG'?1:s.action==='SHORT'?-1:0;
