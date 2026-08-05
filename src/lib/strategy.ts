@@ -56,6 +56,7 @@ function scoreProduction(prices:number[],cfg:StrategyConfig):StrategySignal{
  const reasons=side==='LONG'?['bullish EMA regime','confirmed momentum',triggerReason,'sane volatility','not overextended']:['bearish EMA regime','confirmed momentum',triggerReason,'sane volatility','not overextended'];
  return{action:side,score:100,confidence:100,strategy:'Production Breakout v5',entry,stopLoss,takeProfit,riskReward,reasons};
 }
+export function evaluateProductionStrategy(prices:number[],config:Partial<StrategyConfig>={}):StrategySignal{return scoreProduction(prices,{...DEFAULT_CONFIG,...config});}
 
 function scoreProfile(prices:number[],cfg:StrategyConfig,profile:typeof PROFILES[number]):StrategySignal{
  const clean=prices.filter(p=>Number.isFinite(p)&&p>0).slice(-cfg.lookback),entry=clean.length?clean[clean.length-1]:0;if(clean.length<120||entry<=0)return waitSignal(entry,['Not enough history']);
