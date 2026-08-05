@@ -17,8 +17,7 @@ export async function fetchBinanceUniverse():Promise<BinanceSymbol[]> {
 }
 
 export async function fetchBinanceKlines(symbol:string,interval='5m',limit=180):Promise<{ts:number;price:number}[]> {
-  const qs=new URLSearchParams({kind:'klines',symbol:symbol.replace('/',''),interval,String:undefined as never});
-  qs.delete('String');
+  const qs=new URLSearchParams({kind:'klines',symbol:symbol.replace('/',''),interval});
   qs.set('limit',String(limit));
   const res=await fetch(`/api/binance-universe?${qs.toString()}`,{headers:{accept:'application/json'}});
   if(!res.ok)throw new Error(`Unable to load Binance price history (${res.status}).`);
