@@ -53,6 +53,9 @@ function production(prices:number[],cfg:StrategyConfig):StrategySignal{
  return{action:side,score:Math.round(clamp(score,0,100)),confidence:Math.round(clamp(score,0,100)),strategy:'Production Breakout v10',entry,stopLoss,takeProfit,riskReward,reasons};
 }
 
-export function evaluateProductionStrategy(prices:number[],config:Partial<StrategyConfig>={}):StrategySignal{return production(prices,{...DEFAULT_CONFIG,...config});}
-export function evaluateResearchStrategy(prices:number[],config:Partial<StrategyConfig>={}):StrategySignal{return production(prices,{...DEFAULT_CONFIG,...config,minScore:Math.max(52,config.minScore??55)});}
+export function evaluateProductionStrategy(prices:number[],config:Partial<StrategyConfig>={}):StrategySignal{
+ const requested=config.minScore??DEFAULT_CONFIG.minScore;
+ return production(prices,{...DEFAULT_CONFIG,...config,minScore:Math.min(requested,DEFAULT_CONFIG.minScore)});
+}
+export function evaluateResearchStrategy(prices:number[],config:Partial<StrategyConfig>={}):StrategySignal{return production(prices,{...DEFAULT_CONFIG,...config,minScore:Math.min(52,config.minScore??55)});}
 export function evaluateStrategy(prices:number[],config:Partial<StrategyConfig>={}):StrategySignal{return evaluateProductionStrategy(prices,config);}
