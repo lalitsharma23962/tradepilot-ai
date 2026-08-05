@@ -7,9 +7,9 @@ export type ValidationGate={status:'VALIDATED'|'REJECTED';reasons:string[];minim
 export type ValidationReport={symbol:string;interval:string;candles:number;dataQuality:{startTime:number;endTime:number;durationDays:number;expectedIntervalMinutes:number;gaps:number;duplicateTimestamps:number};costs:{feeBps:number;slippageBps:number};strategies:StrategyResult[];walkForward:{trainBars:number;validationBars:number;testBars:number;selectedStrategy:string;validation:StrategyResult|null;test:StrategyResult|null};monteCarlo:{simulations:number;probabilityOfLoss:number;medianReturnPct:number;p05ReturnPct:number;p95MaxDrawdownPct:number};gate:ValidationGate;generatedAt:string};
 
 export const MAX_STRATEGIES=10;
-export const DEFAULT_BACKTEST_CONFIG:BacktestConfig={initialCapital:10000,feeBps:10,slippageBps:2,riskPerTradePct:0.25,maxPositionPct:20,leverage:10,stopAtr:1.15,rewardRisk:2.2,maxBarsInTrade:48};
+export const DEFAULT_BACKTEST_CONFIG:BacktestConfig={initialCapital:10000,feeBps:10,slippageBps:2,riskPerTradePct:0.25,maxPositionPct:20,leverage:10,stopAtr:1.25,rewardRisk:1.8,maxBarsInTrade:48};
 export const STRATEGIES=[
- {id:'production',name:'Production Breakout v5'},
+ {id:'production',name:'Production Breakout v10'},
  {id:'ema-trend',name:'EMA Trend + Momentum'},
  {id:'breakout',name:'Donchian Breakout'},
  {id:'pullback',name:'EMA Pullback'},
@@ -100,7 +100,7 @@ function simulateProductionRange(cs:Candle[],cfg:BacktestConfig,startIndex=120,e
   }
   if(!open&&!closedThisBar){
    const closes=cs.slice(Math.max(0,i-INDICATOR_LOOKBACK),i).map(x=>x.close);
-   const sig=evaluateProductionStrategy(closes,{minScore:85,minRiskReward:1.8,maxRiskReward:3.2,atrStopMultiple:1.15,lookback:180,strategyLimit:MAX_STRATEGIES});
+   const sig=evaluateProductionStrategy(closes,{minScore:68,minRiskReward:1.5,maxRiskReward:2.2,atrStopMultiple:1.25,lookback:180,strategyLimit:MAX_STRATEGIES,feeBps:cfg.feeBps,slippageBps:cfg.slippageBps});
    if(sig.action!=='WAIT'&&Number.isFinite(sig.entry)&&Number.isFinite(sig.stopLoss)&&Number.isFinite(sig.takeProfit)){
     const side=sig.action==='LONG'?1:-1,signalRisk=Math.abs(sig.entry-sig.stopLoss),signalReward=Math.abs(sig.takeProfit-sig.entry);
     if(signalRisk>0&&signalReward>0){const entry=c.open*(1+side*slip),stopDistance=signalRisk,stop=entry-side*stopDistance,target=entry+side*signalReward,riskBudget=Math.max(0,equity)*cfg.riskPerTradePct/100,riskQty=riskBudget/stopDistance,maxNotional=Math.max(0,equity)*cfg.maxPositionPct/100*Math.max(1,cfg.leverage),qty=Math.max(0,Math.min(riskQty,maxNotional/entry));if(qty>0)open={side,entry,stop,target,qty,bars:0};}
@@ -151,5 +151,5 @@ export async function runValidation(symbol='BTCUSDT',interval='5m',cfg:Partial<B
  if(testResult.maxDrawdownPct>MAX_TEST_DD)reasons.push(`Out-of-sample max drawdown ${testResult.maxDrawdownPct.toFixed(2)}% exceeds ${MAX_TEST_DD}%.`);
  if(mc.probabilityOfLoss>MAX_MC_LOSS)reasons.push(`Monte Carlo loss probability ${mc.probabilityOfLoss.toFixed(1)}% exceeds ${MAX_MC_LOSS}%.`);
  const gate:ValidationGate={status:reasons.length?'REJECTED':'VALIDATED',reasons,minimumTestTrades:MIN_TEST_TRADES,minimumProfitFactor:MIN_TEST_PF,minimumTestReturnPct:0,maximumTestDrawdownPct:MAX_TEST_DD,maximumMonteCarloLossProbability:MAX_MC_LOSS};
- return{symbol,interval,candles:candles.length,dataQuality:quality,costs:{feeBps:config.feeBps,slippageBps:config.slippageBps},strategies:fullResults,walkForward:{trainBars:trainEnd,validationBars:validationEnd-trainEnd,testBars:candles.length-validationEnd,selectedStrategy:'Production Breakout v5',validation,test:testResult},monteCarlo:mc,gate,generatedAt:new Date().toISOString()};
+ return{symbol,interval,candles:candles.length,dataQuality:quality,costs:{feeBps:config.feeBps,slippageBps:config.slippageBps},strategies:fullResults,walkForward:{trainBars:trainEnd,validationBars:validationEnd-trainEnd,testBars:candles.length-validationEnd,selectedStrategy:'Production Breakout v10',validation,test:testResult},monteCarlo:mc,gate,generatedAt:new Date().toISOString()};
 }
