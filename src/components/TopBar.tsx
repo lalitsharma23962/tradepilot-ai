@@ -20,8 +20,21 @@ export function TopBar({ page }: { page: Page }) {
   const [busy, setBusy] = useState(false);
   const [uptime, setUptime] = useState(0);
   const [msg, setMsg] = useState<string | null>(null);
+  const [gateStatus, setGateStatus] = useState<'VALIDATED' | 'REJECTED' | null>(null);
 
   const running = account?.bot_status === 'RUNNING';
+  const gateValidated = gateStatus === 'VALIDATED';
+
+  useEffect(() => {
+    let mounted = true;
+    const loadGate = async () => {
+      const res = await api.validationGateApi();
+      if (mounted && res.ok && res.data) setGateStatus(res.data.status);
+    };
+    loadGate();
+    const id = setInterval(loadGate, 3000);
+    return () => { mounted = false; clearInterval(id); };
+  }, []);
 
   useEffect(() => {
     if (!running) {
@@ -74,6 +87,7 @@ export function TopBar({ page }: { page: Page }) {
           <span className={`mr-1.5 inline-block h-1.5 w-1.5 rounded-full ${running ? 'bg-emerald-400 animate-pulse' : 'bg-slate-500'}`} />
           {running ? 'Bot Running' : 'Bot Stopped'}
         </Badge>
+        {!gateValidated && !running && <Badge tone="negative">Validation Rejected</Badge>}
         {running && (
           <span className="flex items-center gap-1 text-xs text-slate-500">
             <Clock className="h-3.5 w-3.5" />
@@ -90,9 +104,9 @@ export function TopBar({ page }: { page: Page }) {
         </div>
         <div className="flex items-center gap-2">
           {!running ? (
-            <Button onClick={handleStart} disabled={busy} size="sm">
+            <Button onClick={handleStart} disabled={busy || !gateValidated} size="sm">
               <Play className="h-3.5 w-3.5" />
-              Start Paper Bot
+              {gateValidated ? 'Start Paper Bot' : 'Validation Required'}
             </Button>
           ) : (
             <Button onClick={handleStop} disabled={busy} variant="danger" size="sm">
@@ -100,7 +114,7 @@ export function TopBar({ page }: { page: Page }) {
               Stop Paper Bot
             </Button>
           )}
-          <Button onClick={handleRestart} disabled={busy} variant="secondary" size="sm">
+          <Button onClick={handleRestart} disabled={busy || !gateValidated} variant="secondary" size="sm">
             <RotateCcw className="h-3.5 w-3.5" />
             Restart
           </Button>
