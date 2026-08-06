@@ -1,7 +1,7 @@
-// Validation-fix deployment marker: keep production on the merged validation-lab implementation.
+// Validation-fix deployment marker: deterministic completed-candle history paging.
 const BINANCE_BASE='https://data-api.binance.vision/api/v3';
 
-function respond(res:any,body:unknown,status=200){res.status(status).setHeader('content-type','application/json').setHeader('cache-control','public, max-age=30, stale-while-revalidate=60').send(JSON.stringify(body));}
+function respond(res:any,body:unknown,status=200){res.status(status).setHeader('content-type','application/json').setHeader('cache-control','no-store').send(JSON.stringify(body));}
 function intervalMs(interval:string){const m=interval.match(/^(\d+)([mhdw])$/i);if(!m)throw new Error(`Unsupported interval: ${interval}`);const n=Number(m[1]),u=m[2].toLowerCase();return n*(u==='m'?60000:u==='h'?3600000:u==='d'?86400000:604800000);}
 async function fetchKlines(symbol:string,interval:string,limit:number,startTime?:number,endTime?:number){
   const params=new URLSearchParams({symbol,interval,limit:String(Math.min(1000,Math.max(20,limit)))});
@@ -30,9 +30,13 @@ export default async function handler(req:any,res:any){
       const total=Math.min(40000,Math.max(20000,Number(req.query?.total??20000)));
       const ms=intervalMs(interval);
       const rows:unknown[][]=[];
-      let cursor=Math.max(0,Date.now()-total*ms);
-      while(rows.length<total){
-        const requestedBatch=Math.min(1000,total-rows.length);
+      // We need one extra raw candle because the current open candle is deliberately
+      // excluded by the client. The old cursor requested exactly `total` rows, so
+      // after excluding the live candle the validator received 19,999 instead of 20,000.
+      const rawTarget=total+1;
+      let cursor=Math.max(0,Date.now()-rawTarget*ms);
+      while(rows.length<rawTarget){
+        const requestedBatch=Math.min(1000,rawTarget-rows.length);
         const batch=await fetchKlines(symbol,interval,requestedBatch,cursor);
         if(!batch.length)break;
         rows.push(...batch);
@@ -42,8 +46,8 @@ export default async function handler(req:any,res:any){
         if(batch.length<requestedBatch)break;
       }
       const seen=new Set<number>();
-      const klines=rows.filter(r=>{const t=Number(r?.[0]);if(!Number.isFinite(t)||seen.has(t))return false;seen.add(t);return true;}).slice(-total);
-      return respond(res,{ok:true,symbol,interval,requested:total,returned:klines.length,klines});
+      const klines=rows.filter(r=>{const t=Number(r?.[0]);if(!Number.isFinite(t)||seen.has(t))return false;seen.add(t);return true;}).slice(-rawTarget);
+      return respond(res,{ok:true,symbol,interval,requested:total,returned:klines.length,rawRequested:rawTarget,klines});
     }
     const [info,ticker]=await Promise.all([
       fetch(`${BINANCE_BASE}/exchangeInfo`,{headers:{accept:'application/json'}}),
