@@ -3,7 +3,7 @@ import type { Side } from './types';
 export interface StrategySignal { action: Side|'WAIT'; score:number; confidence:number; strategy:string; entry:number; stopLoss:number; takeProfit:number; riskReward:number; reasons:string[]; }
 export interface StrategyConfig { minScore:number; minRiskReward:number; maxRiskReward:number; atrStopMultiple:number; lookback:number; riskPerTradePct?:number; strategyLimit?:number; feeBps?:number; slippageBps?:number; riskReward?:number; }
 
-const DEFAULT_CONFIG:StrategyConfig={minScore:85,minRiskReward:1.8,maxRiskReward:3.2,atrStopMultiple:1.15,lookback:240,strategyLimit:17,feeBps:10,slippageBps:2};
+const DEFAULT_CONFIG:StrategyConfig={minScore:90,minRiskReward:1.8,maxRiskReward:3.2,atrStopMultiple:1.15,lookback:240,strategyLimit:17,feeBps:10,slippageBps:2};
 const mean=(x:number[])=>x.length?x.reduce((a,b)=>a+b,0)/x.length:0;
 const ema=(x:number[],p:number)=>{if(!x.length)return 0;const k=2/(p+1);let e=x[0];for(let i=1;i<x.length;i++)e=x[i]*k+e*(1-k);return e;};
 const trueRange=(x:number[])=>x.slice(1).map((v,i)=>Math.abs(v-x[i]));
@@ -29,39 +29,35 @@ function production(prices:number[],cfg:StrategyConfig):StrategySignal{
  const prior=p.slice(0,-1),hi20=Math.max(...prior.slice(-20)),lo20=Math.min(...prior.slice(-20));
  const trendUp=e20>e50&&e50>e100,trendDown=e20<e50&&e50<e100;
  const mediumUp=e20>e50&&s36>0,mediumDown=e20<e50&&s36<0;
- const momentumLong=s12>Math.max(.00002,vol*.0125)&&s36>0,momentumShort=s12<-Math.max(.00002,vol*.0125)&&s36<0;
+ const momentumLong=s12>Math.max(.00003,vol*.018)&&s36>0,momentumShort=s12<-Math.max(.00003,vol*.018)&&s36<0;
 
- const breakoutLong=entry>hi20+a*0.10,breakoutShort=entry<lo20-a*0.10;
- const pullLong=(trendUp||mediumUp)&&entry>e20&&p.slice(-6,-1).some(v=>v<=e20*1.001)&&s12>0;
- const pullShort=(trendDown||mediumDown)&&entry<e20&&p.slice(-6,-1).some(v=>v>=e20*.999)&&s12<0;
+ const breakoutLong=entry>hi20+a*0.15,breakoutShort=entry<lo20-a*0.15;
+ const pullLong=(trendUp||mediumUp)&&entry>e20&&p.slice(-6,-1).some(v=>v<=e20*1.0005)&&s12>0;
+ const pullShort=(trendDown||mediumDown)&&entry<e20&&p.slice(-6,-1).some(v=>v>=e20*.9995)&&s12<0;
 
  const roundTripCost=(2*(cfg.feeBps??10)+2*(cfg.slippageBps??2))/10000;
  const costAware=vol>=Math.max(.00045,roundTripCost*.55)&&vol<=.025;
- const notExtended=Math.abs(entry-e20)<=a*2.0;
- const trendQualityLong=eff24>=.35&&eff48>=.25&&consistencyLong>=.58&&separation>=.12;
- const trendQualityShort=eff24>=.35&&eff48>=.25&&consistencyShort>=.58&&separation>=.12;
- const expansionQuality=volatilityExpansion>=.80&&volatilityExpansion<=2.20;
- const impulseLong=(entry-p[Math.max(0,p.length-6)])/Math.max(a,entry*0.000001)>=.15;
- const impulseShort=(p[Math.max(0,p.length-6)]-entry)/Math.max(a,entry*0.000001)>=.15;
+ const notExtended=Math.abs(entry-e20)<=a*1.65;
+ const trendQualityLong=eff24>=.42&&eff48>=.30&&consistencyLong>=.62&&separation>=.18;
+ const trendQualityShort=eff24>=.42&&eff48>=.30&&consistencyShort>=.62&&separation>=.18;
+ const expansionQuality=volatilityExpansion>=.85&&volatilityExpansion<=1.90;
+ const impulseLong=(entry-p[Math.max(0,p.length-6)])/Math.max(a,entry*0.000001)>=.20;
+ const impulseShort=(p[Math.max(0,p.length-6)]-entry)/Math.max(a,entry*0.000001)>=.20;
 
- // Score is a quality score, not a count of mutually-exclusive setup types.
- // The previous weighting made a valid continuation/pullback mathematically unable
- // to reach the 85-point production threshold, so the strategy could return zero
- // trades even when all of its quality filters were satisfied.
  const longTrigger=breakoutLong||pullLong||momentumLong;
  const shortTrigger=breakoutShort||pullShort||momentumShort;
- const longScore=(trendUp?20:mediumUp?16:0)+(e9>e20?8:0)+(momentumLong?18:0)+(longTrigger?18:0)+(rrsi>=48&&rrsi<=72?8:0)+(costAware?8:0)+(trendQualityLong?15:0)+(expansionQuality?5:0)+(notExtended?5:0);
- const shortScore=(trendDown?20:mediumDown?16:0)+(e9<e20?8:0)+(momentumShort?18:0)+(shortTrigger?18:0)+(rrsi>=28&&rrsi<=52?8:0)+(costAware?8:0)+(trendQualityShort?15:0)+(expansionQuality?5:0)+(notExtended?5:0);
+ const longScore=(trendUp?20:mediumUp?16:0)+(e9>e20?8:0)+(momentumLong?18:0)+(longTrigger?18:0)+(rrsi>=50&&rrsi<=70?8:0)+(costAware?8:0)+(trendQualityLong?15:0)+(expansionQuality?5:0)+(notExtended?5:0);
+ const shortScore=(trendDown?20:mediumDown?16:0)+(e9<e20?8:0)+(momentumShort?18:0)+(shortTrigger?18:0)+(rrsi>=30&&rrsi<=50?8:0)+(costAware?8:0)+(trendQualityShort?15:0)+(expansionQuality?5:0)+(notExtended?5:0);
 
- const effectiveMinScore=Math.max(85,cfg.minScore);
- // Each setup path remains independently gated. A trade must have a persistent
- // trend/regime, cost-aware volatility, controlled extension and a concrete trigger.
- const continuationLong=(trendUp||mediumUp)&&trendQualityLong&&costAware&&notExtended&&momentumLong&&rrsi>=48&&rrsi<=72;
- const continuationShort=(trendDown||mediumDown)&&trendQualityShort&&costAware&&notExtended&&momentumShort&&rrsi>=28&&rrsi<=52;
- const breakoutSetupLong=(trendUp||mediumUp)&&trendQualityLong&&costAware&&expansionQuality&&notExtended&&breakoutLong&&impulseLong&&rrsi>=48&&rrsi<=72;
- const breakoutSetupShort=(trendDown||mediumDown)&&trendQualityShort&&costAware&&expansionQuality&&notExtended&&breakoutShort&&impulseShort&&rrsi>=28&&rrsi<=52;
- const pullbackLong=(trendUp||mediumUp)&&trendQualityLong&&costAware&&notExtended&&pullLong&&rrsi>=46&&rrsi<=70;
- const pullbackShort=(trendDown||mediumDown)&&trendQualityShort&&costAware&&notExtended&&pullShort&&rrsi>=30&&rrsi<=54;
+ const effectiveMinScore=Math.max(90,cfg.minScore);
+ const commonLong=(trendUp||mediumUp)&&costAware&&notExtended&&expansionQuality&&rrsi>=48&&rrsi<=72;
+ const commonShort=(trendDown||mediumDown)&&costAware&&notExtended&&expansionQuality&&rrsi>=28&&rrsi<=52;
+ const continuationLong=commonLong&&trendQualityLong&&momentumLong;
+ const continuationShort=commonShort&&trendQualityShort&&momentumShort;
+ const breakoutSetupLong=commonLong&&trendQualityLong&&breakoutLong&&impulseLong;
+ const breakoutSetupShort=commonShort&&trendQualityShort&&breakoutShort&&impulseShort;
+ const pullbackLong=commonLong&&trendQualityLong&&pullLong&&momentumLong;
+ const pullbackShort=commonShort&&trendQualityShort&&pullShort&&momentumShort;
  const longOk=continuationLong||breakoutSetupLong||pullbackLong;
  const shortOk=continuationShort||breakoutSetupShort||pullbackShort;
 
@@ -74,27 +70,24 @@ function production(prices:number[],cfg:StrategyConfig):StrategySignal{
    reasons=[trendDown?'bearish EMA regime':'negative EMA/momentum regime',momentumShort?'multi-horizon momentum':'',breakoutSetupShort?'volatility-cleared 20-bar breakdown':pullbackShort?'EMA20 pullback/reclaim':'EMA continuation','trend persistence confirmed','RSI confirmation','cost-aware volatility','controlled extension',impulseShort?'impulse confirmation':''].filter(Boolean);
  }else return wait(entry,['Production setup below quality threshold'],Math.max(longScore,shortScore));
 
- // Keep the structural stop intact. Do not compress it to an ATR multiple merely
- // to manufacture a larger advertised R multiple.
  const recent=p.slice(-8),swingLow=Math.min(...recent),swingHigh=Math.max(...recent);
  const floor=Math.max(entry*0.0008,a*0.35);
  const rawRisk=side==='LONG'?Math.max(entry-swingLow,floor):Math.max(swingHigh-entry,floor);
  const dist=Math.max(rawRisk,floor);
 
- const ultraQuality=score>=94&&eff24>=.50&&eff48>=.38&&separation>=.25&&volatilityExpansion>=.90&&volatilityExpansion<=1.80;
+ const ultraQuality=side==='LONG'
+   ?score>=96&&eff24>=.55&&eff48>=.40&&consistencyLong>=.67&&separation>=.28&&volatilityExpansion>=.90&&volatilityExpansion<=1.70
+   :score>=96&&eff24>=.55&&eff48>=.40&&consistencyShort>=.67&&separation>=.28&&volatilityExpansion>=.90&&volatilityExpansion<=1.70;
  const riskReward=cfg.riskReward!==undefined?clamp(cfg.riskReward,10,15):(ultraQuality?15:10);
  const targetDistance=dist*riskReward;
- // A 10R/15R target must still have plausible path capacity. The old capacity
- // formula was too restrictive for the structural stop and rejected most otherwise
- // valid high-RR setups before they could ever become trades.
- const pathCapacity=a*(14+16*eff24+6*Math.max(0,separation));
+ const pathCapacity=a*(12+17*eff24+6*Math.max(0,separation));
  const targetPathOk=targetDistance<=pathCapacity;
  if(!targetPathOk)return wait(entry,['Target path is not supported by current trend persistence'],score);
 
  const stopLoss=side==='LONG'?entry-dist:entry+dist,takeProfit=side==='LONG'?entry+targetDistance:entry-targetDistance;
- return{action:side,score:Math.round(clamp(score,0,100)),confidence:Math.round(clamp(score,0,100)),strategy:'Production Regime Breakout v15',entry,stopLoss,takeProfit,riskReward,reasons:[...reasons,`risk-normalized ${riskReward}R target`,`trend efficiency ${(eff24*100).toFixed(0)}%`,`score ${Math.round(score)}/100`]};
+ return{action:side,score:Math.round(clamp(score,0,100)),confidence:Math.round(clamp(score,0,100)),strategy:'Production Regime Breakout v16',entry,stopLoss,takeProfit,riskReward,reasons:[...reasons,`risk-normalized ${riskReward}R target`,`trend efficiency ${(eff24*100).toFixed(0)}%`,`score ${Math.round(score)}/100`]};
 }
 
 export function evaluateProductionStrategy(prices:number[],config:Partial<StrategyConfig>={}):StrategySignal{return production(prices,{...DEFAULT_CONFIG,...config});}
-export function evaluateResearchStrategy(prices:number[],config:Partial<StrategyConfig>={}):StrategySignal{return production(prices,{...DEFAULT_CONFIG,...config,minScore:config.minScore??85});}
+export function evaluateResearchStrategy(prices:number[],config:Partial<StrategyConfig>={}):StrategySignal{return production(prices,{...DEFAULT_CONFIG,...config,minScore:config.minScore??90});}
 export function evaluateStrategy(prices:number[],config:Partial<StrategyConfig>={}):StrategySignal{return evaluateProductionStrategy(prices,config);}
