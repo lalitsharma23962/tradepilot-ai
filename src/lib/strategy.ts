@@ -4,7 +4,12 @@ export interface StrategySignal { action: Side|'WAIT'; score:number; confidence:
 export interface StrategyConfig { minScore:number; minRiskReward:number; maxRiskReward:number; atrStopMultiple:number; lookback:number; riskPerTradePct?:number; strategyLimit?:number; feeBps?:number; slippageBps?:number; riskReward?:number; }
 
 const DEFAULT_CONFIG:StrategyConfig={minScore:90,minRiskReward:10,maxRiskReward:15,atrStopMultiple:1.15,lookback:240,strategyLimit:17,feeBps:10,slippageBps:2};
-const MAX_STRUCTURAL_RISK_ATR=1.35;
+// production() receives closes only, so its ATR is close-to-close rather than true high/low ATR.
+// Calibrate the measured BTCUSDT 5m median ratio before applying the true-ATR risk ceiling.
+const CLOSE_ATR_TO_TRUE_ATR=1.79;
+const MAX_STRUCTURAL_RISK_TRUE_ATR=1.35;
+const MAX_STRUCTURAL_RISK_ATR=MAX_STRUCTURAL_RISK_TRUE_ATR*CLOSE_ATR_TO_TRUE_ATR;
+const SWING_LOOKBACK=5;
 const mean=(x:number[])=>x.length?x.reduce((a,b)=>a+b,0)/x.length:0;
 const ema=(x:number[],p:number)=>{if(!x.length)return 0;const k=2/(p+1);let e=x[0];for(let i=1;i<x.length;i++)e=x[i]*k+e*(1-k);return e;};
 const trueRange=(x:number[])=>x.slice(1).map((v,i)=>Math.abs(v-x[i]));
@@ -65,11 +70,11 @@ function production(prices:number[],cfg:StrategyConfig):StrategySignal{
  else if(breakoutSetupShort&&shortScore>=effectiveMinScore){side='SHORT';score=shortScore;reasons=['bearish EMA regime','multi-horizon momentum','fresh volatility-cleared breakdown','trend persistence confirmed','RSI confirmation','cost-aware volatility','controlled extension',compression?'recent compression released':'clean expansion','impulse confirmation'];}
  else if(pullbackSetupShort&&shortScore>=effectiveMinScore){side='SHORT';score=shortScore;reasons=['bearish EMA regime','multi-horizon momentum','EMA20 pullback/reclaim','trend persistence confirmed','RSI confirmation','cost-aware volatility','controlled extension','pullback impulse confirmation'];}
  else return wait(entry,['Production setup below high-RR quality threshold'],Math.max(longScore,shortScore));
- const recent=p.slice(-12),swingLow=Math.min(...recent),swingHigh=Math.max(...recent);
+ const recent=p.slice(-SWING_LOOKBACK),swingLow=Math.min(...recent),swingHigh=Math.max(...recent);
  const floor=Math.max(entry*0.0008,a*0.55);
  const rawRisk=side==='LONG'?Math.max(entry-swingLow,floor):Math.max(swingHigh-entry,floor);
  const structuralCap=a*MAX_STRUCTURAL_RISK_ATR;
- if(rawRisk>structuralCap)return wait(entry,['Structural stop is too wide for the high-RR risk envelope'],score);
+ if(rawRisk>structuralCap)return wait(entry,[`Structural stop is too wide: ${rawRisk.toFixed(2)} exceeds ${MAX_STRUCTURAL_RISK_TRUE_ATR.toFixed(2)} true ATR after ${CLOSE_ATR_TO_TRUE_ATR.toFixed(2)}x close-ATR calibration`],score);
  const dist=Math.max(rawRisk,floor,entry*roundTripCost*2.0);
  const ultraQuality=score>=96&&eff24>=.50&&eff48>=.35&&(side==='LONG'?consistencyLong:consistencyShort)>=.64&&separation>=.20&&volatilityExpansion>=.80&&volatilityExpansion<=1.85;
  const riskReward=cfg.riskReward!==undefined?clamp(cfg.riskReward,10,15):(ultraQuality?15:10);
@@ -77,7 +82,7 @@ function production(prices:number[],cfg:StrategyConfig):StrategySignal{
  const pathCapacity=a*(11+28*eff24+11*Math.max(0,separation)+7*Math.max(0,volatilityExpansion-1));
  if(targetDistance>pathCapacity)return wait(entry,['Target path is not supported by current trend persistence'],score);
  const stopLoss=side==='LONG'?entry-dist:entry+dist,takeProfit=side==='LONG'?entry+targetDistance:entry-targetDistance;
- return{action:side,score:Math.round(clamp(score,0,100)),confidence:Math.round(clamp(score,0,100)),strategy:'Production Regime Breakout v25',entry,stopLoss,takeProfit,riskReward,reasons:[...reasons,`risk-normalized ${riskReward}R target`,`structural risk ceiling ${MAX_STRUCTURAL_RISK_ATR.toFixed(2)} ATR`,`trend efficiency ${(eff24*100).toFixed(0)}%`,`score ${Math.round(score)}/100`]};
+ return{action:side,score:Math.round(clamp(score,0,100)),confidence:Math.round(clamp(score,0,100)),strategy:'Production Regime Breakout v25',entry,stopLoss,takeProfit,riskReward,reasons:[...reasons,`risk-normalized ${riskReward}R target`,`structural risk ceiling ${MAX_STRUCTURAL_RISK_TRUE_ATR.toFixed(2)} true ATR`,`trend efficiency ${(eff24*100).toFixed(0)}%`,`score ${Math.round(score)}/100`]};
 }
 
 export function evaluateProductionStrategy(prices:number[],config:Partial<StrategyConfig>={}):StrategySignal{return production(prices,{...DEFAULT_CONFIG,...config});}
