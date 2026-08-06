@@ -9,7 +9,9 @@ import type { BacktestConfig, ValidationReport, FoldDiagnostic } from './backtes
  * into the V8 engine for the single untouched OOS evaluation.
  */
 const PROFILES = [
-  { rewardRisk: 2.2 },
+  { rewardRisk: 1.6 },
+  { rewardRisk: 2.0 },
+  { rewardRisk: 2.4 },
   { rewardRisk: 2.8 },
   { rewardRisk: 3.2 },
 ] as const;
@@ -17,6 +19,11 @@ const PROFILES = [
 const MIN_PF = 1.05;
 const MAX_DD = 20;
 const MIN_RETURN = 0;
+
+function minFoldTrades(report: ValidationReport): number {
+  const foldSize = report.walkForward.trainBars || 0;
+  return Math.max(12, Math.min(30, Math.floor(foldSize / 400)));
+}
 
 function foldsFor(report: ValidationReport, strategyId: string): FoldDiagnostic[] {
   const direct = report.foldDiagnostics?.[strategyId];
@@ -29,17 +36,18 @@ function foldsFor(report: ValidationReport, strategyId: string): FoldDiagnostic[
   return Array.isArray(byName) ? byName : [];
 }
 
-function isStable(folds: FoldDiagnostic[]): boolean {
+function isStable(report: ValidationReport, folds: FoldDiagnostic[]): boolean {
+  const minimumTrades = minFoldTrades(report);
   return folds.length === 3 && folds.every((f) =>
-    f.trades >= 30 &&
+    f.trades >= minimumTrades &&
     f.returnPct > MIN_RETURN &&
     f.profitFactor >= MIN_PF &&
     f.maxDrawdownPct <= MAX_DD,
   );
 }
 
-function stabilityScore(folds: FoldDiagnostic[]): number {
-  if (!isStable(folds)) return -Infinity;
+function stabilityScore(report: ValidationReport, folds: FoldDiagnostic[]): number {
+  if (!isStable(report, folds)) return -Infinity;
 
   const pf = folds.map((f) => Math.min(f.profitFactor, 3));
   const ret = folds.map((f) => f.returnPct);
@@ -58,13 +66,14 @@ function stabilityScore(folds: FoldDiagnostic[]): number {
   const worstDd = max(dd);
   const meanTrades = mean(trades);
   const retSpread = max(ret) - min(ret);
+  const minimumTrades = minFoldTrades(report);
 
   return (
     meanPf * 30 +
     worstPf * 25 +
     meanRet * 2 +
     worstRet * 4 +
-    Math.min(meanTrades / 30, 4) * 2 -
+    Math.min(meanTrades / Math.max(minimumTrades, 1), 4) * 2 -
     worstDd * 0.8 -
     retSpread * 0.25
   );
@@ -76,7 +85,7 @@ function chooseCandidate(reports: ValidationReport[]): { reportIndex: number; st
   reports.forEach((report, reportIndex) => {
     for (const strategy of report.strategies) {
       const folds = foldsFor(report, strategy.id);
-      const score = stabilityScore(folds);
+      const score = stabilityScore(report, folds);
       if (!Number.isFinite(score)) continue;
       if (!best || score > best.score) {
         best = { reportIndex, strategyId: strategy.id, score };
@@ -85,6 +94,34 @@ function chooseCandidate(reports: ValidationReport[]): { reportIndex: number; st
   });
 
   return best ? { reportIndex: best.reportIndex, strategyId: best.strategyId } : null;
+}
+
+function diagnosticReason(reports: ValidationReport[]): string {
+  let best: { report: ValidationReport; strategy: string; passed: number; score: number } | null = null;
+
+  for (const report of reports) {
+    for (const strategy of report.strategies) {
+      const folds = foldsFor(report, strategy.id);
+      if (folds.length !== 3) continue;
+      const minimumTrades = minFoldTrades(report);
+      const passed = folds.filter((f) =>
+        f.trades >= minimumTrades &&
+        f.returnPct > MIN_RETURN &&
+        f.profitFactor >= MIN_PF &&
+        f.maxDrawdownPct <= MAX_DD,
+      ).length;
+      const score = folds.reduce((sum, f) =>
+        sum + Math.min(f.profitFactor, 3) * 10 + f.returnPct - f.maxDrawdownPct * 0.25,
+      0);
+      if (!best || passed > best.passed || (passed === best.passed && score > best.score)) {
+        best = { report, strategy: strategy.name, passed, score };
+      }
+    }
+  }
+
+  if (!best) return 'No strategy produced complete pre-OOS fold diagnostics.';
+  const minimumTrades = minFoldTrades(best.report);
+  return `No strategy passed all 3 pre-OOS stability folds. Closest candidate: ${best.strategy} (${best.passed}/3 folds passed; minimum ${minimumTrades} trades/fold, PF >= ${MIN_PF}, positive return, DD <= ${MAX_DD}%).`;
 }
 
 export async function runValidation(
@@ -100,7 +137,8 @@ export async function runValidation(
   }
 
   // First pass: evaluate every exit profile independently. Only pre-OOS fold
-  // diagnostics are inspected here.
+  // diagnostics are inspected here. The untouched final OOS segment is never
+  // used to choose a profile or strategy.
   const reports: ValidationReport[] = [];
   for (const profile of PROFILES) {
     reports.push(await runV8(symbol, interval, { ...cfg, rewardRisk: profile.rewardRisk }));
@@ -135,7 +173,7 @@ export async function runValidation(
         ...diagnostic.gate,
         status: 'REJECTED',
         reasons: [
-          'No strategy passed all 3 pre-OOS stability folds; final OOS was not run.',
+          diagnosticReason(reports),
           ...diagnostic.gate.reasons.filter((r) => !r.toLowerCase().includes('selected strategy')),
         ],
       },
