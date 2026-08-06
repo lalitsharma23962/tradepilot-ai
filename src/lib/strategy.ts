@@ -44,14 +44,18 @@ function production(prices:number[],cfg:StrategyConfig):StrategySignal{
  const impulseLong=(entry-p[Math.max(0,p.length-6)])/Math.max(a,entry*0.000001)>=.15;
  const impulseShort=(p[Math.max(0,p.length-6)]-entry)/Math.max(a,entry*0.000001)>=.15;
 
- const longScore=(trendUp?20:mediumUp?14:0)+(e9>e20?8:0)+(momentumLong?20:0)+(breakoutLong?18:0)+(pullLong?15:0)+(rrsi>=48&&rrsi<=72?7:0)+(costAware?4:0)+(trendQualityLong?8:0);
- const shortScore=(trendDown?20:mediumDown?14:0)+(e9<e20?8:0)+(momentumShort?20:0)+(breakoutShort?18:0)+(pullShort?15:0)+(rrsi>=28&&rrsi<=52?7:0)+(costAware?4:0)+(trendQualityShort?8:0);
+ // Score is a quality score, not a count of mutually-exclusive setup types.
+ // The previous weighting made a valid continuation/pullback mathematically unable
+ // to reach the 85-point production threshold, so the strategy could return zero
+ // trades even when all of its quality filters were satisfied.
+ const longTrigger=breakoutLong||pullLong||momentumLong;
+ const shortTrigger=breakoutShort||pullShort||momentumShort;
+ const longScore=(trendUp?20:mediumUp?16:0)+(e9>e20?8:0)+(momentumLong?18:0)+(longTrigger?18:0)+(rrsi>=48&&rrsi<=72?8:0)+(costAware?8:0)+(trendQualityLong?15:0)+(expansionQuality?5:0)+(notExtended?5:0);
+ const shortScore=(trendDown?20:mediumDown?16:0)+(e9<e20?8:0)+(momentumShort?18:0)+(shortTrigger?18:0)+(rrsi>=28&&rrsi<=52?8:0)+(costAware?8:0)+(trendQualityShort?15:0)+(expansionQuality?5:0)+(notExtended?5:0);
 
  const effectiveMinScore=Math.max(85,cfg.minScore);
- // V15 separates continuation and breakout setups. The old implementation required
- // impulse confirmation for every setup, which made otherwise valid EMA pullbacks
- // disappear. A setup still needs trend quality, cost-aware volatility, controlled
- // extension and a concrete continuation/breakout trigger.
+ // Each setup path remains independently gated. A trade must have a persistent
+ // trend/regime, cost-aware volatility, controlled extension and a concrete trigger.
  const continuationLong=(trendUp||mediumUp)&&trendQualityLong&&costAware&&notExtended&&momentumLong&&rrsi>=48&&rrsi<=72;
  const continuationShort=(trendDown||mediumDown)&&trendQualityShort&&costAware&&notExtended&&momentumShort&&rrsi>=28&&rrsi<=52;
  const breakoutSetupLong=(trendUp||mediumUp)&&trendQualityLong&&costAware&&expansionQuality&&notExtended&&breakoutLong&&impulseLong&&rrsi>=48&&rrsi<=72;
@@ -70,9 +74,8 @@ function production(prices:number[],cfg:StrategyConfig):StrategySignal{
    reasons=[trendDown?'bearish EMA regime':'negative EMA/momentum regime',momentumShort?'multi-horizon momentum':'',breakoutSetupShort?'volatility-cleared 20-bar breakdown':pullbackShort?'EMA20 pullback/reclaim':'EMA continuation','trend persistence confirmed','RSI confirmation','cost-aware volatility','controlled extension',impulseShort?'impulse confirmation':''].filter(Boolean);
  }else return wait(entry,['Production setup below quality threshold'],Math.max(longScore,shortScore));
 
- // Keep the structural stop intact. The prior version compressed a large structural
- // stop down to 0.85 ATR, which could place the stop inside the recent swing and
- // artificially inflate the advertised R multiple.
+ // Keep the structural stop intact. Do not compress it to an ATR multiple merely
+ // to manufacture a larger advertised R multiple.
  const recent=p.slice(-8),swingLow=Math.min(...recent),swingHigh=Math.max(...recent);
  const floor=Math.max(entry*0.0008,a*0.35);
  const rawRisk=side==='LONG'?Math.max(entry-swingLow,floor):Math.max(swingHigh-entry,floor);
@@ -81,7 +84,10 @@ function production(prices:number[],cfg:StrategyConfig):StrategySignal{
  const ultraQuality=score>=94&&eff24>=.50&&eff48>=.38&&separation>=.25&&volatilityExpansion>=.90&&volatilityExpansion<=1.80;
  const riskReward=cfg.riskReward!==undefined?clamp(cfg.riskReward,10,15):(ultraQuality?15:10);
  const targetDistance=dist*riskReward;
- const pathCapacity=a*(8+14*eff24+5*Math.max(0,separation));
+ // A 10R/15R target must still have plausible path capacity. The old capacity
+ // formula was too restrictive for the structural stop and rejected most otherwise
+ // valid high-RR setups before they could ever become trades.
+ const pathCapacity=a*(14+16*eff24+6*Math.max(0,separation));
  const targetPathOk=targetDistance<=pathCapacity;
  if(!targetPathOk)return wait(entry,['Target path is not supported by current trend persistence'],score);
 
