@@ -1,7 +1,7 @@
 import type { Side } from './types';
 
 export interface StrategySignal { action: Side|'WAIT'; score:number; confidence:number; strategy:string; entry:number; stopLoss:number; takeProfit:number; riskReward:number; reasons:string[]; }
-export interface StrategyConfig { minScore:number; minRiskReward:number; maxRiskReward:number; atrStopMultiple:number; lookback:number; riskPerTradePct?:number; strategyLimit?:number; feeBps?:number; slippageBps?:number; }
+export interface StrategyConfig { minScore:number; minRiskReward:number; maxRiskReward:number; atrStopMultiple:number; lookback:number; riskPerTradePct?:number; strategyLimit?:number; feeBps?:number; slippageBps?:number; riskReward?:number; }
 const DEFAULT_CONFIG:StrategyConfig={minScore:85,minRiskReward:1.8,maxRiskReward:3.2,atrStopMultiple:1.15,lookback:240,strategyLimit:17,feeBps:10,slippageBps:2};
 const mean=(x:number[])=>x.length?x.reduce((a,b)=>a+b,0)/x.length:0;
 const ema=(x:number[],p:number)=>{if(!x.length)return 0;const k=2/(p+1);let e=x[0];for(let i=1;i<x.length;i++)e=x[i]*k+e*(1-k);return e;};
@@ -27,8 +27,12 @@ function production(prices:number[],cfg:StrategyConfig):StrategySignal{
  const shortOk=(trendDown||mediumDown)&&(momentumShort||breakoutShort||pullShort||e9<e20)&&rrsi>=28&&rrsi<=52&&costAware&&notExtended;
  let side:Side,score:number,reasons:string[];
  if(longOk&&longScore>=effectiveMinScore){side='LONG';score=longScore;reasons=[trendUp?'bullish EMA regime':'positive EMA/momentum regime',momentumLong?'multi-horizon momentum':'',breakoutLong?'20-bar breakout':pullLong?'EMA20 pullback/reclaim':'EMA9/20 confirmation','RSI confirmation','cost-aware volatility','not excessively extended'].filter(Boolean);}else if(shortOk&&shortScore>=effectiveMinScore){side='SHORT';score=shortScore;reasons=[trendDown?'bearish EMA regime':'negative EMA/momentum regime',momentumShort?'multi-horizon momentum':'',breakoutShort?'20-bar breakdown':pullShort?'EMA20 pullback/reclaim':'EMA9/20 confirmation','RSI confirmation','cost-aware volatility','not excessively extended'].filter(Boolean);}else return wait(entry,['Production setup below quality threshold'],Math.max(longScore,shortScore));
- const dist=Math.max(a*cfg.atrStopMultiple,entry*.0012),riskReward=clamp(1.8,cfg.minRiskReward,cfg.maxRiskReward),stopLoss=side==='LONG'?entry-dist:entry+dist,takeProfit=side==='LONG'?entry+dist*riskReward:entry-dist*riskReward;
- return{action:side,score:Math.round(clamp(score,0,100)),confidence:Math.round(clamp(score,0,100)),strategy:'Production Regime Breakout v13',entry,stopLoss,takeProfit,riskReward,reasons};
+ const dist=Math.max(a*cfg.atrStopMultiple,entry*.0012);
+ // High-RR policy: normal qualified signals target 10R; ultra-high quality signals target 15R.
+ // An explicit riskReward is only honored when supplied by research tooling and is bounded to 10R–15R.
+ const riskReward=cfg.riskReward!==undefined?clamp(cfg.riskReward,10,15):(score>=94?15:10);
+ const stopLoss=side==='LONG'?entry-dist:entry+dist,takeProfit=side==='LONG'?entry+dist*riskReward:entry-dist*riskReward;
+ return{action:side,score:Math.round(clamp(score,0,100)),confidence:Math.round(clamp(score,0,100)),strategy:'Production Regime Breakout v13',entry,stopLoss,takeProfit,riskReward,reasons:[...reasons,`${riskReward}R high-risk-reward target`]};
 }
 export function evaluateProductionStrategy(prices:number[],config:Partial<StrategyConfig>={}):StrategySignal{return production(prices,{...DEFAULT_CONFIG,...config});}
 export function evaluateResearchStrategy(prices:number[],config:Partial<StrategyConfig>={}):StrategySignal{return production(prices,{...DEFAULT_CONFIG,...config,minScore:config.minScore??85});}
