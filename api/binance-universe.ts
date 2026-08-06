@@ -1,3 +1,4 @@
+// Validation-fix deployment marker: keep production on the merged validation-lab implementation.
 const BINANCE_BASE='https://data-api.binance.vision/api/v3';
 
 function respond(res:any,body:unknown,status=200){res.status(status).setHeader('content-type','application/json').setHeader('cache-control','public, max-age=30, stale-while-revalidate=60').send(JSON.stringify(body));}
