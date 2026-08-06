@@ -31,13 +31,14 @@ export default async function handler(req:any,res:any){
       const rows:unknown[][]=[];
       let cursor=Math.max(0,Date.now()-total*ms);
       while(rows.length<total){
-        const batch=await fetchKlines(symbol,interval,Math.min(1000,total-rows.length),cursor);
+        const requestedBatch=Math.min(1000,total-rows.length);
+        const batch=await fetchKlines(symbol,interval,requestedBatch,cursor);
         if(!batch.length)break;
         rows.push(...batch);
         const last=Number(batch[batch.length-1]?.[0]);
         if(!Number.isFinite(last))break;
         cursor=last+ms;
-        if(batch.length<Math.min(1000,total-rows.length+batch.length))break;
+        if(batch.length<requestedBatch)break;
       }
       const seen=new Set<number>();
       const klines=rows.filter(r=>{const t=Number(r?.[0]);if(!Number.isFinite(t)||seen.has(t))return false;seen.add(t);return true;}).slice(-total);
