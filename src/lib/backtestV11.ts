@@ -101,7 +101,7 @@ function simulate(c:Candle[],cfg:BacktestConfig,start:number,end:number):Strateg
     }
     peak=Math.max(peak,equity);dd=Math.max(dd,(peak-equity)/peak*100);
   }
-  return summarize('production',returns,config.initialCapital);
+  return summarize('production',returns,cfg.initialCapital);
 }
 
 function foldPass(report:StrategyResult){return report.trades>=MIN_FOLD_TRADES&&report.returnPct>0&&report.profitFactor>=MIN_PF&&report.maxDrawdownPct<=MAX_DD;}
