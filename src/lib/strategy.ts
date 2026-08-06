@@ -4,6 +4,7 @@ export interface StrategySignal { action: Side|'WAIT'; score:number; confidence:
 export interface StrategyConfig { minScore:number; minRiskReward:number; maxRiskReward:number; atrStopMultiple:number; lookback:number; riskPerTradePct?:number; strategyLimit?:number; feeBps?:number; slippageBps?:number; riskReward?:number; }
 
 const DEFAULT_CONFIG:StrategyConfig={minScore:90,minRiskReward:10,maxRiskReward:15,atrStopMultiple:1.15,lookback:240,strategyLimit:17,feeBps:10,slippageBps:2};
+const MAX_STRUCTURAL_RISK_ATR=1.35;
 const mean=(x:number[])=>x.length?x.reduce((a,b)=>a+b,0)/x.length:0;
 const ema=(x:number[],p:number)=>{if(!x.length)return 0;const k=2/(p+1);let e=x[0];for(let i=1;i<x.length;i++)e=x[i]*k+e*(1-k);return e;};
 const trueRange=(x:number[])=>x.slice(1).map((v,i)=>Math.abs(v-x[i]));
@@ -16,10 +17,11 @@ const directionalConsistency=(x:number[],side:1|-1)=>{if(x.length<2)return 0;con
 const dispersion=(x:number[])=>{if(x.length<2)return 0;const m=mean(x);return Math.sqrt(mean(x.map(v=>(v-m)**2)));};
 const wait=(entry:number,reasons:string[],score=0):StrategySignal=>({action:'WAIT',score:Math.round(clamp(score,0,100)),confidence:Math.round(clamp(score,0,100)),strategy:'No Trade',entry,stopLoss:entry,takeProfit:entry,riskReward:0,reasons});
 
-/** v22: high-RR regime model with execution-aligned risk normalization.
- * The declared 10R/15R setup is now checked against the same risk floor/cap
- * used by the validator, preventing a large structural stop from silently
- * turning a validated target into a much farther target at execution time. */
+/** v23: high-RR regime model with execution-aligned capped structural risk.
+ * The same bounded risk model is used by signal generation and validation.
+ * Profit protection is deliberately delayed so a 10R/15R setup is not
+ * converted into a stream of tiny 0.5R-1.5R exits before the thesis has time
+ * to develop. The strict validation gate remains unchanged. */
 function production(prices:number[],cfg:StrategyConfig):StrategySignal{
  const p=prices.filter(Number.isFinite).filter(v=>v>0).slice(-cfg.lookback),entry=p[p.length-1]??0;
  if(p.length<160||!entry)return wait(entry,['Not enough history']);
@@ -67,20 +69,15 @@ function production(prices:number[],cfg:StrategyConfig):StrategySignal{
  const recent=p.slice(-12),swingLow=Math.min(...recent),swingHigh=Math.max(...recent);
  const floor=Math.max(entry*0.0008,a*0.55);
  const rawRisk=side==='LONG'?Math.max(entry-swingLow,floor):Math.max(swingHigh-entry,floor);
- const costFloor=entry*roundTripCost*2.0;
- // Keep the structural component bounded so the validator's path-feasibility
- // check and the executor use the same risk regime. This preserves 10R/15R
- // targets without allowing an oversized swing stop to create an accidental
- // 20R+ distance at execution.
- const structuralCap=a*1.50;
- const dist=Math.max(Math.min(rawRisk,structuralCap),floor,costFloor);
+ const structuralCap=a*MAX_STRUCTURAL_RISK_ATR;
+ const dist=Math.max(Math.min(rawRisk,structuralCap),floor,entry*roundTripCost*2.0);
  const ultraQuality=score>=96&&eff24>=.50&&eff48>=.35&&(side==='LONG'?consistencyLong:consistencyShort)>=.64&&separation>=.20&&volatilityExpansion>=.80&&volatilityExpansion<=1.85;
  const riskReward=cfg.riskReward!==undefined?clamp(cfg.riskReward,10,15):(ultraQuality?15:10);
  const targetDistance=dist*riskReward;
  const pathCapacity=a*(11+28*eff24+11*Math.max(0,separation)+7*Math.max(0,volatilityExpansion-1));
  if(targetDistance>pathCapacity)return wait(entry,['Target path is not supported by current trend persistence'],score);
  const stopLoss=side==='LONG'?entry-dist:entry+dist,takeProfit=side==='LONG'?entry+targetDistance:entry-targetDistance;
- return{action:side,score:Math.round(clamp(score,0,100)),confidence:Math.round(clamp(score,0,100)),strategy:'Production Regime Breakout v22',entry,stopLoss,takeProfit,riskReward,reasons:[...reasons,`risk-normalized ${riskReward}R target`,`trend efficiency ${(eff24*100).toFixed(0)}%`,`score ${Math.round(score)}/100`]};
+ return{action:side,score:Math.round(clamp(score,0,100)),confidence:Math.round(clamp(score,0,100)),strategy:'Production Regime Breakout v23',entry,stopLoss,takeProfit,riskReward,reasons:[...reasons,`risk-normalized ${riskReward}R target`,`structural risk cap ${MAX_STRUCTURAL_RISK_ATR.toFixed(2)} ATR`,`trend efficiency ${(eff24*100).toFixed(0)}%`,`score ${Math.round(score)}/100`]};
 }
 
 export function evaluateProductionStrategy(prices:number[],config:Partial<StrategyConfig>={}):StrategySignal{return production(prices,{...DEFAULT_CONFIG,...config});}
