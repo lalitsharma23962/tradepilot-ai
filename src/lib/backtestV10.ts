@@ -93,8 +93,6 @@ export async function runValidation(symbol = 'BTCUSDT', interval = '1h', cfg: Pa
   if (candles.length < 20000) throw new Error(`Need 20,000 completed candles; received ${candles.length}.`);
   if (selectedStrategyId) return runProfile(symbol, interval, cfg, PROFILES[1], candles, selectedStrategyId, false);
 
-  // One full pre-OOS scout keeps research diagnostics available. The expensive
-  // profile sweep then evaluates only the strategy the paper engine actually trades.
   const scout = await runV8(symbol, interval, cfg, undefined, candles, true);
   const reports: ValidationReport[] = [];
   for (const profile of PROFILES) reports.push(await runProfile(symbol, interval, cfg, profile, candles, VALIDATED_STRATEGY_ID, true));
@@ -114,8 +112,8 @@ export async function runValidation(symbol = 'BTCUSDT', interval = '1h', cfg: Pa
     };
   }
 
-  // Only after all three pre-OOS folds pass do we evaluate the untouched final 30% once.
-  return runProfile(symbol, interval, cfg, PROFILES[candidate.reportIndex], candles, candidate.strategyId, false);
+  const { reportIndex, strategyId } = candidate;
+  return runProfile(symbol, interval, cfg, PROFILES[reportIndex], candles, strategyId, false);
 }
 
 export * from './backtestV8';
