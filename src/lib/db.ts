@@ -73,10 +73,7 @@ export async function getDb(): Promise<DbClient> {
   initPromise = (async () => {
     const isBrowser = typeof window !== 'undefined' && typeof Worker !== 'undefined' && typeof indexedDB !== 'undefined';
     const db = isBrowser
-      ? await PGliteWorker.create(
-          new Worker(new URL('./db-worker.ts', import.meta.url), { type: 'module' }),
-          { dataDir: 'idb://tradepilot', id: 'tradepilot-db' },
-        )
+      ? await PGliteWorker.create(new Worker(new URL('./db-worker.ts', import.meta.url), { type: 'module' }), { dataDir: 'idb://tradepilot', id: 'tradepilot-db' })
       : new PGlite();
     await db.exec(SCHEMA_SQL);
     await db.exec(`ALTER TABLE tp_account ADD COLUMN IF NOT EXISTS max_strategies integer NOT NULL DEFAULT 10;`);
@@ -91,7 +88,15 @@ export async function getDb(): Promise<DbClient> {
     dbInstance = db;
     return db;
   })();
-  return initPromise;
+  try {
+    return await initPromise;
+  } catch (error) {
+    // A transient IndexedDB/worker/PGlite startup failure must not permanently
+    // poison the cached promise. The next query gets a clean initialization attempt.
+    initPromise = null;
+    dbInstance = null;
+    throw error;
+  }
 }
 
 export async function resetDatabase(): Promise<void> {
@@ -103,53 +108,9 @@ export async function resetDatabase(): Promise<void> {
   await db.exec(`UPDATE tp_validation_gate SET status='REJECTED',symbol='BTCUSDT',interval='5m',candles=0,test_return_pct=0,test_profit_factor=0,monte_carlo_loss_pct=100,generated_at=now() WHERE id=1;`);
 }
 
-export async function query<T = Record<string, unknown>>(sql: string, params?: unknown[]): Promise<T[]> {
-  const db = await getDb();
-  const result = await db.query(sql, params ?? []);
-  return (result.rows ?? []) as T[];
-}
+export async function query<T = Record<string, unknown>>(sql: string, params?: unknown[]): Promise<T[]> { const db = await getDb(); const result = await db.query(sql, params ?? []); return (result.rows ?? []) as T[]; }
+export async function execute(sql: string, params?: unknown[]): Promise<void> { const db = await getDb(); await db.query(sql, params ?? []); }
 
-export async function execute(sql: string, params?: unknown[]): Promise<void> {
-  const db = await getDb();
-  await db.query(sql, params ?? []);
-}
-
-export type ValidationGateRecord = {
-  status: 'VALIDATED' | 'REJECTED';
-  symbol: string;
-  interval: string;
-  candles: number;
-  test_return_pct: number;
-  test_profit_factor: number;
-  monte_carlo_loss_pct: number;
-  generated_at: string;
-};
-
-export async function getValidationGate(): Promise<ValidationGateRecord> {
-  const rows = await query<ValidationGateRecord>(`SELECT status,symbol,interval,candles,test_return_pct, test_profit_factor, monte_carlo_loss_pct, generated_at FROM tp_validation_gate WHERE id=1;`);
-  return rows[0] ?? {
-    status: 'REJECTED',
-    symbol: 'BTCUSDT',
-    interval: '5m',
-    candles: 0,
-    test_return_pct: 0,
-    test_profit_factor: 0,
-    monte_carlo_loss_pct: 100,
-    generated_at: new Date(0).toISOString(),
-  };
-}
-
-export async function setValidationGate(gate: {
-  status: 'VALIDATED' | 'REJECTED';
-  symbol: string;
-  interval: string;
-  candles: number;
-  testReturnPct: number;
-  testProfitFactor: number;
-  monteCarloLossPct: number;
-}): Promise<void> {
-  await execute(
-    `INSERT INTO tp_validation_gate(id,status,symbol,interval,candles,test_return_pct,test_profit_factor,monte_carlo_loss_pct,generated_at) VALUES(1,$1,$2,$3,$4,$5,$6,$7,now()) ON CONFLICT(id) DO UPDATE SET status=EXCLUDED.status,symbol=EXCLUDED.symbol,interval=EXCLUDED.interval,candles=EXCLUDED.candles,test_return_pct=EXCLUDED.test_return_pct,test_profit_factor=EXCLUDED.test_profit_factor,monte_carlo_loss_pct=EXCLUDED.monte_carlo_loss_pct,generated_at=EXCLUDED.generated_at;`,
-    [gate.status, gate.symbol, gate.interval, gate.candles, gate.testReturnPct, gate.testProfitFactor, gate.monteCarloLossPct],
-  );
-}
+export type ValidationGateRecord = { status:'VALIDATED'|'REJECTED'; symbol:string; interval:string; candles:number; test_return_pct:number; test_profit_factor:number; monte_carlo_loss_pct:number; generated_at:string; };
+export async function getValidationGate(): Promise<ValidationGateRecord> { const rows=await query<ValidationGateRecord>(`SELECT status,symbol,interval,candles,test_return_pct,test_profit_factor,monte_carlo_loss_pct,generated_at FROM tp_validation_gate WHERE id=1;`); return rows[0]??{status:'REJECTED',symbol:'BTCUSDT',interval:'5m',candles:0,test_return_pct:0,test_profit_factor:0,monte_carlo_loss_pct:100,generated_at:new Date(0).toISOString()}; }
+export async function setValidationGate(gate:{status:'VALIDATED'|'REJECTED';symbol:string;interval:string;candles:number;testReturnPct:number;testProfitFactor:number;monteCarloLossPct:number}):Promise<void>{await execute(`INSERT INTO tp_validation_gate(id,status,symbol,interval,candles,test_return_pct,test_profit_factor,monte_carlo_loss_pct,generated_at) VALUES(1,$1,$2,$3,$4,$5,$6,$7,now()) ON CONFLICT(id) DO UPDATE SET status=EXCLUDED.status,symbol=EXCLUDED.symbol,interval=EXCLUDED.interval,candles=EXCLUDED.candles,test_return_pct=EXCLUDED.test_return_pct,test_profit_factor=EXCLUDED.test_profit_factor,monte_carlo_loss_pct=EXCLUDED.monte_carlo_loss_pct,generated_at=EXCLUDED.generated_at;`,[gate.status,gate.symbol,gate.interval,gate.candles,gate.testReturnPct,gate.testProfitFactor,gate.monteCarloLossPct]);}
