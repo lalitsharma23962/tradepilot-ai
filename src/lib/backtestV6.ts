@@ -13,19 +13,23 @@ function normalizeRows(rows:unknown[][],interval:string,target:number):Candle[]{
 
 async function fetchViaProxy(symbol:string,interval:string,total:number):Promise<Candle[]>{
  const url=`/api/binance-universe?kind=history&symbol=${encodeURIComponent(symbol)}&interval=${encodeURIComponent(interval)}&total=${total}`;
- const res=await fetch(url,{headers:{accept:'application/json'}});
+ const res=await fetch(url,{headers:{accept:'application/json'},cache:'no-store'});
  if(!res.ok)throw new Error(`Historical proxy request failed (${res.status}).`);
  const body=await res.json() as {ok?:boolean;error?:string;klines?:unknown[][]};
  if(!body.ok||!Array.isArray(body.klines))throw new Error(body.error??'Historical proxy returned invalid data.');
- return normalizeRows(body.klines,interval,total);
+ const candles=normalizeRows(body.klines,interval,total);
+ if(candles.length<total)throw new Error(`Historical proxy returned ${candles.length.toLocaleString()} completed candles; expected ${total.toLocaleString()}.`);
+ return candles;
 }
 
 async function fetchDirect(symbol:string,interval:string,total:number):Promise<Candle[]>{
- const ms=intervalMs(interval),rows:unknown[][]=[];let cursor=Math.max(0,Date.now()-total*ms);
- while(rows.length<total){
-  const n=Math.min(1000,total-rows.length);
+ const ms=intervalMs(interval),rows:unknown[][]=[];
+ const rawTarget=total+1;
+ let cursor=Math.max(0,Date.now()-rawTarget*ms);
+ while(rows.length<rawTarget){
+  const n=Math.min(1000,rawTarget-rows.length);
   const params=new URLSearchParams({symbol,interval,startTime:String(cursor),limit:String(n)});
-  const res=await fetch(`https://data-api.binance.vision/api/v3/klines?${params.toString()}`,{headers:{accept:'application/json'}});
+  const res=await fetch(`https://data-api.binance.vision/api/v3/klines?${params.toString()}`,{headers:{accept:'application/json'},cache:'no-store'});
   if(!res.ok)throw new Error(`Historical market data request failed (${res.status}).`);
   const batch=await res.json() as unknown[][];
   if(!batch.length)break;
@@ -36,14 +40,14 @@ async function fetchDirect(symbol:string,interval:string,total:number):Promise<C
   if(batch.length<n)break;
   await new Promise(r=>setTimeout(r,80));
  }
- return normalizeRows(rows,interval,total);
+ const candles=normalizeRows(rows,interval,total);
+ if(candles.length<total)throw new Error(`Historical market data returned ${candles.length.toLocaleString()} completed candles; expected ${total.toLocaleString()}.`);
+ return candles;
 }
 
-/** Fetch completed historical candles through the Vercel proxy first.
- * The proxy performs Binance pagination server-side, avoiding 20-40 browser
- * requests, CORS/rate-limit failures, and partial-history validation runs.
- * Direct Binance paging remains a controlled fallback for local/dev failures.
- */
+/** Fetch exactly `limit` completed historical candles through the Vercel proxy first.
+ * One extra raw interval is requested so filtering the still-open candle cannot
+ * turn a 20,000-candle request into the 19,999-candle validation failure. */
 export async function fetchHistoricalCandles(symbol='BTCUSDT',interval='5m',limit=MAX_HISTORY_BARS):Promise<Candle[]>{
  const target=Math.min(MAX_HISTORY_BARS,Math.max(MIN_HISTORY,limit));
  try{return await fetchViaProxy(symbol,interval,target);}catch(proxyError){
