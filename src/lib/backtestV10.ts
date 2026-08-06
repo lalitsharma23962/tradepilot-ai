@@ -23,6 +23,8 @@ const MIN_PF = 1.05;
 const MAX_DD = 20;
 const MIN_RETURN = 0;
 
+type Candidate = { reportIndex: number; strategyId: string };
+
 function minFoldTrades(report: ValidationReport): number {
   const foldSize = report.walkForward.trainBars || 0;
   return Math.max(12, Math.min(30, Math.floor(foldSize / 400)));
@@ -58,11 +60,10 @@ function stabilityScore(report: ValidationReport, folds: FoldDiagnostic[]): numb
   return worstRet * 5 + worstPf * 30 + meanPf * 10 + weighted((f) => Math.min(f.profitFactor, 3)) * 18 + meanRet + weighted((f) => f.returnPct) * 2 + Math.min(meanTrades / Math.max(minimumTrades, 1), 4) * 1.5 + Math.min(weighted((f) => f.trades) / Math.max(minimumTrades, 1), 4) - worstDd * 0.9 - weighted((f) => f.maxDrawdownPct) * 0.35 - (max(ret) - min(ret)) * 0.55 - (max(dd) - min(dd)) * 0.20;
 }
 
-function chooseCandidate(reports: ValidationReport[]): { reportIndex: number; strategyId: string } | null {
-  let best: { reportIndex: number; strategyId: string; score: number } | null = null;
+function chooseCandidate(reports: ValidationReport[]): Candidate | null {
+  let best: Candidate & { score: number } | null = null;
   reports.forEach((report, reportIndex) => {
-    const strategy = report.strategies.find((s) => s.id === VALIDATED_STRATEGY_ID);
-    if (!strategy) return;
+    if (!report.strategies.some((s) => s.id === VALIDATED_STRATEGY_ID)) return;
     const score = stabilityScore(report, foldsFor(report, VALIDATED_STRATEGY_ID));
     if (Number.isFinite(score) && (!best || score > best.score)) best = { reportIndex, strategyId: VALIDATED_STRATEGY_ID, score };
   });
@@ -97,7 +98,7 @@ export async function runValidation(symbol = 'BTCUSDT', interval = '1h', cfg: Pa
   const reports: ValidationReport[] = [];
   for (const profile of PROFILES) reports.push(await runProfile(symbol, interval, cfg, profile, candles, VALIDATED_STRATEGY_ID, true));
 
-  const candidate = chooseCandidate(reports);
+  const candidate: Candidate | null = chooseCandidate(reports);
   if (!candidate) {
     const diagnostic = { ...scout };
     return {
@@ -112,8 +113,8 @@ export async function runValidation(symbol = 'BTCUSDT', interval = '1h', cfg: Pa
     };
   }
 
-  const { reportIndex, strategyId } = candidate;
-  return runProfile(symbol, interval, cfg, PROFILES[reportIndex], candles, strategyId, false);
+  const selected = candidate as Candidate;
+  return runProfile(symbol, interval, cfg, PROFILES[selected.reportIndex], candles, selected.strategyId, false);
 }
 
 export * from './backtestV8';
