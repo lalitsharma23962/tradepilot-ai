@@ -2,7 +2,6 @@ import { startEngine, stopEngine, restartEngine, isEngineRunning, getMarketTicks
 import { getAccount, getPositions, getTrades, getPerformance, getSnapshots, getSettings, updateSettings } from './repository';
 import { getValidationGate, setValidationGate } from './db';
 import { runValidation, type BacktestConfig, type ValidationReport } from './backtest';
-
 export interface ApiResult<T>{ok:boolean;data?:T;error?:string;}
 async function wrap<T>(fn:()=>T|Promise<T>):Promise<ApiResult<T>>{try{return{ok:true,data:await fn()};}catch(err){const message=err instanceof Error?err.message:'Unknown error';console.error('[api] error:',message);return{ok:false,error:message};}}
 export async function health():Promise<ApiResult<{status:string;engine:boolean;ticks:number;db:string}>>{return wrap(()=>({status:'ok',engine:isEngineRunning(),ticks:getTickCount(),db:'pglite'}));}
@@ -23,4 +22,4 @@ export async function aiRecommendation(symbol?:string):Promise<ApiResult<import(
 export async function closePositionApi(positionId:string):Promise<ApiResult<{ok:boolean;message:string}>>{return wrap(()=>closePosition(positionId));}
 export async function closeAllApi():Promise<ApiResult<{ok:boolean;message:string}>>{return wrap(()=>closeAllPositions());}
 export async function resetApi():Promise<ApiResult<{ok:boolean;message:string}>>{return wrap(()=>resetAccount());}
-export async function validationApi(symbol='BTCUSDT',interval='1h',cfg:Partial<BacktestConfig>={},selectedStrategyId?:string):Promise<ApiResult<ValidationReport>>{return wrap(async()=>{const report=await runValidation(symbol,interval,cfg,selectedStrategyId);await setValidationGate({status:report.gate.status,symbol,interval,candles:report.candles,testReturnPct:report.walkForward.test?.returnPct??0,testProfitFactor:report.walkForward.test?.profitFactor??0,monteCarloLossPct:report.monteCarlo.probabilityOfLoss});return report;});}
+export async function validationApi(symbol='BTCUSDT',interval='5m',cfg:Partial<BacktestConfig>={},selectedStrategyId?:string):Promise<ApiResult<ValidationReport>>{return wrap(async()=>{const report=await runValidation(symbol,interval,cfg,selectedStrategyId);await setValidationGate({status:report.gate.status,symbol,interval,candles:report.candles,testReturnPct:report.walkForward.test?.returnPct??0,testProfitFactor:report.walkForward.test?.profitFactor??0,monteCarloLossPct:report.monteCarlo.probabilityOfLoss});return report;});}
