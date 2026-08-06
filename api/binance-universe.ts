@@ -1,20 +1,47 @@
 const BINANCE_BASE='https://data-api.binance.vision/api/v3';
 
 function respond(res:any,body:unknown,status=200){res.status(status).setHeader('content-type','application/json').setHeader('cache-control','public, max-age=30, stale-while-revalidate=60').send(JSON.stringify(body));}
+function intervalMs(interval:string){const m=interval.match(/^(\d+)([mhdw])$/i);if(!m)throw new Error(`Unsupported interval: ${interval}`);const n=Number(m[1]),u=m[2].toLowerCase();return n*(u==='m'?60000:u==='h'?3600000:u==='d'?86400000:604800000);}
+async function fetchKlines(symbol:string,interval:string,limit:number,startTime?:number,endTime?:number){
+  const params=new URLSearchParams({symbol,interval,limit:String(Math.min(1000,Math.max(20,limit)))});
+  if(startTime!==undefined)params.set('startTime',String(startTime));
+  if(endTime!==undefined)params.set('endTime',String(endTime));
+  const r=await fetch(`${BINANCE_BASE}/klines?${params.toString()}`,{headers:{accept:'application/json'}});
+  if(!r.ok)throw new Error(`Binance klines request failed (${r.status}).`);
+  return await r.json() as unknown[][];
+}
 
 export default async function handler(req:any,res:any){
   try{
     if(req.method!=='GET')return respond(res,{error:'Method not allowed.'},405);
     const kind=String(req.query?.kind??'universe');
-    if(kind==='klines'){
+    if(kind==='klines'||kind==='history'){
       const symbol=String(req.query?.symbol??'').trim().toUpperCase();
       const interval=String(req.query?.interval??'5m').trim();
-      const limit=Math.min(500,Math.max(20,Number(req.query?.limit??180)));
       if(!/^[A-Z0-9_]+$/.test(symbol))return respond(res,{error:'Invalid symbol.'},400);
-      const url=`${BINANCE_BASE}/klines?symbol=${encodeURIComponent(symbol)}&interval=${encodeURIComponent(interval)}&limit=${limit}`;
-      const r=await fetch(url,{headers:{accept:'application/json'}});
-      if(!r.ok)throw new Error(`Binance klines request failed (${r.status}).`);
-      return respond(res,{ok:true,klines:await r.json()});
+      if(kind==='klines'){
+        const limit=Math.min(1000,Math.max(20,Number(req.query?.limit??180)));
+        const startRaw=Number(req.query?.startTime),endRaw=Number(req.query?.endTime);
+        const startTime=Number.isFinite(startRaw)&&startRaw>0?startRaw:undefined;
+        const endTime=Number.isFinite(endRaw)&&endRaw>0?endRaw:undefined;
+        return respond(res,{ok:true,klines:await fetchKlines(symbol,interval,limit,startTime,endTime)});
+      }
+      const total=Math.min(40000,Math.max(20000,Number(req.query?.total??20000)));
+      const ms=intervalMs(interval);
+      const rows:unknown[][]=[];
+      let cursor=Math.max(0,Date.now()-total*ms);
+      while(rows.length<total){
+        const batch=await fetchKlines(symbol,interval,Math.min(1000,total-rows.length),cursor);
+        if(!batch.length)break;
+        rows.push(...batch);
+        const last=Number(batch[batch.length-1]?.[0]);
+        if(!Number.isFinite(last))break;
+        cursor=last+ms;
+        if(batch.length<Math.min(1000,total-rows.length+batch.length))break;
+      }
+      const seen=new Set<number>();
+      const klines=rows.filter(r=>{const t=Number(r?.[0]);if(!Number.isFinite(t)||seen.has(t))return false;seen.add(t);return true;}).slice(-total);
+      return respond(res,{ok:true,symbol,interval,requested:total,returned:klines.length,klines});
     }
     const [info,ticker]=await Promise.all([
       fetch(`${BINANCE_BASE}/exchangeInfo`,{headers:{accept:'application/json'}}),
