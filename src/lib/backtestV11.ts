@@ -2,7 +2,7 @@ import { fetchHistoricalCandles, type Candle, type BacktestConfig, type Strategy
 import { evaluateProductionStrategy } from './strategy';
 import { runValidation as runResearchValidation } from './backtestV8';
 
-/** V23: strict production validation for high-RR paper strategy. */
+/** V24: strict production validation for high-RR paper strategy. */
 const MAX_HISTORY_BARS = 20000;
 const PRE_OOS = 0.70;
 const FOLDS = 3;
@@ -28,7 +28,7 @@ function summarize(id:string, returns:number[], initial:number):StrategyResult {
   let equity=initial, peak=initial, dd=0;
   for(const r of returns){ equity*=1+r/100; peak=Math.max(peak,equity); dd=Math.max(dd,(peak-equity)/peak*100); }
   const ret=(equity/initial-1)*100, wr=returns.length?wins.length/returns.length*100:0, avg=mean(returns), neg=sd(losses), s=sd(returns), sh=s?Math.sqrt(returns.length)*avg/s:0, so=neg?Math.sqrt(returns.length)*avg/neg:0;
-  return {id,name:'Production Regime Breakout v23',trades:returns.length,wins:wins.length,losses:losses.length,winRate:wr,profitFactor:pf,netPnl:equity-initial,returnPct:ret,maxDrawdownPct:dd,avgTrade:avg,score:(ret+Math.min(pf,5)*2.5+sh*2+so*.75+wr/25-dd*.8)*Math.min(1,returns.length/30),tradeReturnsPct:returns,sharpe:sh,sortino:so,calmar:dd?ret/dd:0,expectancy:avg,turnoverPct:returns.reduce((a,b)=>a+Math.abs(b),0)};
+  return {id,name:'Production Regime Breakout v24',trades:returns.length,wins:wins.length,losses:losses.length,winRate:wr,profitFactor:pf,netPnl:equity-initial,returnPct:ret,maxDrawdownPct:dd,avgTrade:avg,score:(ret+Math.min(pf,5)*2.5+sh*2+so*.75+wr/25-dd*.8)*Math.min(1,returns.length/30),tradeReturnsPct:returns,sharpe:sh,sortino:so,calmar:dd?ret/dd:0,expectancy:avg,turnoverPct:returns.reduce((a,b)=>a+Math.abs(b),0)};
 }
 
 function monte(returns:number[],runs=5000){
@@ -49,23 +49,14 @@ function simulate(c:Candle[],cfg:BacktestConfig,start:number,end:number):Strateg
 
   for(let i=Math.max(start,LOOKBACK);i<end;i++){
     const b=c[i], hist=c.slice(Math.max(0,i-LOOKBACK),i);
+    let closedThisBar=false;
     if(open){
       open.bars++;
-      const favorable=open.side===1?b.high-open.entry:open.entry-b.low;
-      const r=favorable/Math.max(open.initialRisk,1e-12);
-      // High-RR setups need room to breathe. Protection is intentionally delayed
-      // so normal 1R-2R pullbacks do not turn a 10R/15R thesis into tiny exits.
-      if(r>=6){
-        const trail=open.side===1?b.close-open.initialRisk*3.0:b.close+open.initialRisk*3.0;
-        if(open.side===1)open.stop=Math.max(open.stop,trail);else open.stop=Math.min(open.stop,trail);
-      }else if(r>=4){
-        const lock=open.entry+open.side*open.initialRisk*2.0;
-        if(open.side===1)open.stop=Math.max(open.stop,lock);else open.stop=Math.min(open.stop,lock);
-      }else if(r>=2.5){
-        const lock=open.entry+open.side*open.initialRisk*0.5;
-        if(open.side===1)open.stop=Math.max(open.stop,lock);else open.stop=Math.min(open.stop,lock);
-      }
-
+      // V24 deliberately does NOT trail or lock profit before the configured
+      // 10R/15R target. The prior validator was counting 0.5R/2R/3R runner
+      // exits as wins, which made the displayed "10R/15R" strategy materially
+      // different from the actual tested payoff. A strict high-RR gate must
+      // validate the real target, not a hidden lower-R multiple.
       const stopHit=open.side===1?b.low<=open.stop:b.high>=open.stop;
       const targetHit=open.side===1?b.high>=open.target:b.low<=open.target;
       const timeout=open.bars>=cfg.maxBarsInTrade;
@@ -78,9 +69,12 @@ function simulate(c:Candle[],cfg:BacktestConfig,start:number,end:number):Strateg
         returns.push(equity?100*pnl/equity:0);
         equity+=pnl;
         open=null;
+        closedThisBar=true;
       }
     }
-    if(!open){
+    // Never open a replacement position at the same candle's open after an
+    // earlier position has already been resolved on that candle.
+    if(!open&&!closedThisBar){
       const signal=evaluateProductionStrategy(hist.map(x=>x.close),{minScore:MIN_SCORE,lookback:LOOKBACK,feeBps:cfg.feeBps,slippageBps:cfg.slippageBps});
       if(signal.action!=='WAIT'&&signal.riskReward>=LOW_RR){
         const side=signal.action==='LONG'?1:-1;
@@ -88,7 +82,6 @@ function simulate(c:Candle[],cfg:BacktestConfig,start:number,end:number):Strateg
         const signalAtr=atr(hist);
         const entryGap=Math.abs(b.open-signal.entry)/Math.max(signalAtr,entry*0.000001);
         if(entryGap>0.35)continue;
-        // Use exactly the same capped structural-risk regime as strategy.ts.
         const structuralRisk=Math.abs(entry-signal.stopLoss);
         const boundedStructuralRisk=Math.min(structuralRisk,signalAtr*MAX_STRUCTURAL_RISK_ATR);
         const volatilityRisk=signalAtr*0.65;
@@ -113,7 +106,7 @@ function simulate(c:Candle[],cfg:BacktestConfig,start:number,end:number):Strateg
 function foldPass(report:StrategyResult){return report.trades>=MIN_FOLD_TRADES&&report.returnPct>0&&report.profitFactor>=MIN_PF&&report.maxDrawdownPct<=MAX_DD;}
 
 export async function runValidation(symbol='BTCUSDT',interval='1h',cfg:Partial<BacktestConfig>={},_selectedStrategyId?:string):Promise<ValidationReport>{
-  const config={initialCapital:10000,feeBps:10,slippageBps:2,riskPerTradePct:.25,maxPositionPct:20,leverage:10,stopAtr:1.15,rewardRisk:10,maxBarsInTrade:interval==='15m'?480:interval==='4h'?180:240,...cfg};
+  const config={initialCapital:10000,feeBps:10,slippageBps:2,riskPerTradePct:.25,maxPositionPct:20,leverage:10,stopAtr:1.15,rewardRisk:10,maxBarsInTrade:interval==='5m'?720:interval==='15m'?480:interval==='4h'?180:240,...cfg};
   const fetched=await fetchHistoricalCandles(symbol,interval,MAX_HISTORY_BARS+5);
   const candles=fetched.slice(-MAX_HISTORY_BARS);
   if(candles.length<MAX_HISTORY_BARS)throw new Error(`Need ${MAX_HISTORY_BARS.toLocaleString()} completed candles; received ${candles.length.toLocaleString()}.`);
@@ -130,7 +123,7 @@ export async function runValidation(symbol='BTCUSDT',interval='1h',cfg:Partial<B
   const test=allThree?simulate(candles,config,pre,n):null;
   const mc=test?monte(test.tradeReturnsPct):monte([]);
   const reasons:string[]=[];
-  if(!allThree){const passed=folds.filter(foldPass).length;reasons.push(`Production Regime Breakout v23 did not pass all 3 pre-OOS stability folds (${passed}/3 passed; minimum ${MIN_FOLD_TRADES} trades/fold, PF >= ${MIN_PF}, positive return, DD <= ${MAX_DD}%).`);}
+  if(!allThree){const passed=folds.filter(foldPass).length;reasons.push(`Production Regime Breakout v24 did not pass all 3 pre-OOS stability folds (${passed}/3 passed; minimum ${MIN_FOLD_TRADES} trades/fold, PF >= ${MIN_PF}, positive return, DD <= ${MAX_DD}%).`);}
   if(test&&test.trades<MIN_TEST_TRADES)reasons.push(`OOS trades ${test.trades} < ${MIN_TEST_TRADES}.`);
   if(test&&test.profitFactor<MIN_PF)reasons.push(`OOS PF ${test.profitFactor.toFixed(2)} < ${MIN_PF}.`);
   if(test&&test.returnPct<=0)reasons.push(`OOS return ${test.returnPct.toFixed(2)}% is not positive.`);
@@ -143,5 +136,5 @@ export async function runValidation(symbol='BTCUSDT',interval='1h',cfg:Partial<B
   const strategies=[validation,...strategyRows].sort((a,b)=>b.score-a.score);
   const gate:ValidationGate={status:reasons.length?'REJECTED':'VALIDATED',reasons,minimumTestTrades:MIN_TEST_TRADES,minimumProfitFactor:MIN_PF,minimumTestReturnPct:0,maximumTestDrawdownPct:MAX_DD,maximumMonteCarloLossProbability:MAX_MC_LOSS};
   const step=interval==='1h'?3600000:interval==='4h'?14400000:interval==='15m'?900000:interval==='5m'?300000:60000;
-  return{symbol,interval,candles:n,dataQuality:{startTime:candles[0].openTime,endTime:candles.at(-1)!.openTime,durationDays:(candles.at(-1)!.openTime-candles[0].openTime)/864e5,expectedIntervalMinutes:step/60000,gaps:candles.slice(1).filter((x,i)=>x.openTime-candles[i].openTime!==step).length,duplicateTimestamps:n-new Set(candles.map(x=>x.openTime)).size},costs:{feeBps:config.feeBps,slippageBps:config.slippageBps,roundTripPct:2*(config.feeBps+config.slippageBps)/10000},strategies,walkForward:{trainBars:foldSize,validationBars:foldSize,testBars:n-pre,selectedStrategy:allThree?'Production Regime Breakout v23':'No eligible strategy',validation:allThree?validation:null,test},foldDiagnostics,monteCarlo:mc,gate,generatedAt:new Date().toISOString(),research:{asOf:new Date().toISOString(),dataWindowBars:n,selectionMethod:'Strict production strategy v23; 3 non-overlapping pre-OOS folds; 10R/15R targets with execution-aligned bounded structural/volatility risk; continuation, breakout and pullback setup paths require momentum/impulse confirmation; next-candle gap protection; delayed high-RR profit protection; all 3 folds required; untouched 30% OOS; costs included; no manual OOS tuning.',coverage:['10R target for score 90-95','15R target for ultra-quality score 96+','execution-aligned risk normalization','1.35 ATR structural risk cap','cost-aware minimum risk distance','ATR/structural stop floor','trend-efficiency and directional-consistency filter','volatility-cleared breakouts','momentum-confirmed continuation and EMA pullback setups','controlled extension filter','next-candle gap protection','delayed protection until 2.5R','2R lock at 4R','3R runner protection from 6R','strict 3-fold stability gate','untouched 30% OOS','5,000-run Monte Carlo loss test']}};
+  return{symbol,interval,candles:n,dataQuality:{startTime:candles[0].openTime,endTime:candles.at(-1)!.openTime,durationDays:(candles.at(-1)!.openTime-candles[0].openTime)/864e5,expectedIntervalMinutes:step/60000,gaps:candles.slice(1).filter((x,i)=>x.openTime-candles[i].openTime!==step).length,duplicateTimestamps:n-new Set(candles.map(x=>x.openTime)).size},costs:{feeBps:config.feeBps,slippageBps:config.slippageBps,roundTripPct:2*(config.feeBps+config.slippageBps)/10000},strategies,walkForward:{trainBars:foldSize,validationBars:foldSize,testBars:n-pre,selectedStrategy:allThree?'Production Regime Breakout v24':'No eligible strategy',validation:allThree?validation:null,test},foldDiagnostics,monteCarlo:mc,gate,generatedAt:new Date().toISOString(),research:{asOf:new Date().toISOString(),dataWindowBars:n,selectionMethod:'Strict production strategy v24; 3 non-overlapping pre-OOS folds; 10R/15R targets with execution-aligned bounded structural/volatility risk; no pre-target profit lock/trailing exits; no same-bar re-entry; continuation, breakout and pullback setup paths require momentum/impulse confirmation; next-candle gap protection; all 3 folds required; untouched 30% OOS; costs included; no manual OOS tuning.',coverage:['10R target for score 90-95','15R target for ultra-quality score 96+','execution-aligned risk normalization','1.35 ATR structural risk cap','cost-aware minimum risk distance','ATR/structural stop floor','trend-efficiency and directional-consistency filter','volatility-cleared breakouts','momentum-confirmed continuation and EMA pullback setups','controlled extension filter','next-candle gap protection','target-integrity: no profit lock before 10R/15R','no same-candle replacement entry','strict 3-fold stability gate','untouched 30% OOS','5,000-run Monte Carlo loss test']}};
 }
