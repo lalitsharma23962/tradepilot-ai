@@ -2,9 +2,11 @@ import { runValidation as runV8 } from './backtestV8';
 import { fetchHistoricalCandles, type Candle } from './backtestV6';
 import type { BacktestConfig, ValidationReport, FoldDiagnostic } from './backtestV6';
 
-/** V13: robustness-first validation with a bounded, faster pre-OOS profile sweep.
- * The same candle set is reused for every profile. The final 30% remains
- * untouched until a candidate passes all three non-overlapping pre-OOS folds.
+/** V14: fast, safety-aligned validation.
+ * The paper engine trades Production Regime Breakout v13, so the gate must
+ * validate that same strategy. Other strategies remain visible through the
+ * research/scout report but can never approve the paper bot by themselves.
+ * The final 30% remains untouched until all three pre-OOS folds pass.
  */
 const PROFILES = [
   { rewardRisk: 1.8, stopAtr: 1.25, maxBarsInTrade: 48 },
@@ -16,6 +18,7 @@ const PROFILES = [
 ] as const;
 
 const MAX_HISTORY_BARS = 20000;
+const VALIDATED_STRATEGY_ID = 'production';
 const MIN_PF = 1.05;
 const MAX_DD = 20;
 const MIN_RETURN = 0;
@@ -57,24 +60,28 @@ function stabilityScore(report: ValidationReport, folds: FoldDiagnostic[]): numb
 
 function chooseCandidate(reports: ValidationReport[]): { reportIndex: number; strategyId: string } | null {
   let best: { reportIndex: number; strategyId: string; score: number } | null = null;
-  reports.forEach((report, reportIndex) => report.strategies.forEach((strategy) => {
-    const score = stabilityScore(report, foldsFor(report, strategy.id));
-    if (Number.isFinite(score) && (!best || score > best.score)) best = { reportIndex, strategyId: strategy.id, score };
-  }));
+  reports.forEach((report, reportIndex) => {
+    const strategy = report.strategies.find((s) => s.id === VALIDATED_STRATEGY_ID);
+    if (!strategy) return;
+    const score = stabilityScore(report, foldsFor(report, VALIDATED_STRATEGY_ID));
+    if (Number.isFinite(score) && (!best || score > best.score)) best = { reportIndex, strategyId: VALIDATED_STRATEGY_ID, score };
+  });
   return best ? { reportIndex: best.reportIndex, strategyId: best.strategyId } : null;
 }
 
 function diagnosticReason(reports: ValidationReport[]): string {
   let best: { report: ValidationReport; strategy: string; passed: number; score: number } | null = null;
-  for (const report of reports) for (const strategy of report.strategies) {
-    const folds = foldsFor(report, strategy.id);
+  for (const report of reports) {
+    const strategy = report.strategies.find((s) => s.id === VALIDATED_STRATEGY_ID);
+    if (!strategy) continue;
+    const folds = foldsFor(report, VALIDATED_STRATEGY_ID);
     if (folds.length !== 3) continue;
     const passed = folds.filter((f) => passesFold(report, f)).length;
     const score = folds.reduce((sum, f, i) => sum + [0.25, 0.30, 0.45][i] * (Math.min(f.profitFactor, 3) * 10 + f.returnPct * 2 - f.maxDrawdownPct * 0.35), 0);
     if (!best || passed > best.passed || (passed === best.passed && score > best.score)) best = { report, strategy: strategy.name, passed, score };
   }
-  if (!best) return 'No strategy produced complete pre-OOS fold diagnostics.';
-  return `No strategy passed all 3 pre-OOS stability folds. Closest candidate: ${best.strategy} (${best.passed}/3 folds passed; minimum ${minFoldTrades(best.report)} trades/fold, PF >= ${MIN_PF}, positive return, DD <= ${MAX_DD}%).`;
+  if (!best) return 'Production Regime Breakout v13 did not produce complete pre-OOS fold diagnostics.';
+  return `Production Regime Breakout v13 did not pass all 3 pre-OOS stability folds (${best.passed}/3 passed; minimum ${minFoldTrades(best.report)} trades/fold, PF >= ${MIN_PF}, positive return, DD <= ${MAX_DD}%). Other research strategies cannot approve the paper bot unless the engine is explicitly wired to trade the same validated strategy.`;
 }
 
 async function runProfile(symbol: string, interval: string, cfg: Partial<BacktestConfig>, profile: typeof PROFILES[number], candles: Candle[], selectedStrategyId?: string, preOosOnly = false) {
@@ -86,21 +93,23 @@ export async function runValidation(symbol = 'BTCUSDT', interval = '1h', cfg: Pa
   if (candles.length < 20000) throw new Error(`Need 20,000 completed candles; received ${candles.length}.`);
   if (selectedStrategyId) return runProfile(symbol, interval, cfg, PROFILES[1], candles, selectedStrategyId, false);
 
+  // One full pre-OOS scout keeps research diagnostics available. The expensive
+  // profile sweep then evaluates only the strategy the paper engine actually trades.
+  const scout = await runV8(symbol, interval, cfg, undefined, candles, true);
   const reports: ValidationReport[] = [];
-  for (const profile of PROFILES) reports.push(await runProfile(symbol, interval, cfg, profile, candles, undefined, true));
+  for (const profile of PROFILES) reports.push(await runProfile(symbol, interval, cfg, profile, candles, VALIDATED_STRATEGY_ID, true));
 
   const candidate = chooseCandidate(reports);
   if (!candidate) {
-    const diagnostic = [...reports].sort((a, b) => (b.strategies[0]?.score ?? -Infinity) - (a.strategies[0]?.score ?? -Infinity))[0];
-    if (!diagnostic) throw new Error('Validation produced no profile reports.');
+    const diagnostic = { ...scout };
     return {
       ...diagnostic,
       walkForward: { ...diagnostic.walkForward, selectedStrategy: '', validation: null, test: null },
       gate: { ...diagnostic.gate, status: 'REJECTED', reasons: [diagnosticReason(reports)] },
       research: {
         ...diagnostic.research,
-        selectionMethod: '6 exit profiles; three non-overlapping pre-OOS folds; all 3 folds required; recent-fold weighted robustness; fold-dispersion penalties; untouched 30% OOS; costs included in every trade.',
-        coverage: [...diagnostic.research.coverage, '6-profile multi-horizon exit sweep', 'recent pre-OOS regime weighting', 'fold return/drawdown dispersion penalty', 'three-fold regime consistency gate'],
+        selectionMethod: '6 exit profiles for the exact paper-engine strategy; three non-overlapping pre-OOS folds; all 3 folds required; recent-fold weighted robustness; fold-dispersion penalties; untouched 30% OOS; costs included in every trade.',
+        coverage: [...diagnostic.research.coverage, '6-profile multi-horizon exit sweep', 'paper-engine/validator strategy alignment', 'recent pre-OOS regime weighting', 'fold return/drawdown dispersion penalty', 'three-fold regime consistency gate'],
       },
     };
   }
