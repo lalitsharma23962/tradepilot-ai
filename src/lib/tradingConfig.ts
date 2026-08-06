@@ -1,0 +1,32 @@
+export type TradingMode='PAPER';
+export const TRADING_CONFIG={
+ mode:'PAPER' as TradingMode,
+ strategyVersion:'v27',
+ minScore:90,
+ ultraScore:96,
+ researchMinRiskReward:2,
+ researchMaxRiskReward:3,
+ productionMinRiskReward:2,
+ productionMaxRiskReward:3,
+ atrStopMultiple:1.5,
+ maxStructuralRiskAtr:1.35,
+ swingLookback:5,
+ lookback:240,
+ riskPerTradePct:.25,
+ maxAllocationPct:20,
+ maxPositions:3,
+ cooldownBars:3,
+ feeBps:10,
+ slippageBps:2,
+ maxBarsInTrade:{'5m':1440,'15m':480,'1h':240,'4h':180} as Record<string,number>,
+ minFoldTrades:12,
+ minTestTrades:30,
+ minProfitFactor:1.05,
+ maxDrawdownPct:20,
+ maxMonteCarloLossProbability:45,
+ preOosFraction:.70,
+ folds:3,
+ monteCarloRuns:5000,
+} as const;
+export type TradingConfig=typeof TRADING_CONFIG;
+export function resolveTradingConfig(overrides:Partial<TradingConfig>={}):TradingConfig{return {...TRADING_CONFIG,...overrides};}
