@@ -31,7 +31,6 @@ function production(prices:number[],cfg:StrategyConfig):StrategySignal{
  const mediumUp=e20>e50&&s36>0,mediumDown=e20<e50&&s36<0;
  const momentumLong=s12>Math.max(.00002,vol*.0125)&&s36>0,momentumShort=s12<-Math.max(.00002,vol*.0125)&&s36<0;
 
- // A breakout must clear the prior range by a meaningful fraction of current volatility.
  const breakoutLong=entry>hi20+a*0.10,breakoutShort=entry<lo20-a*0.10;
  const pullLong=(trendUp||mediumUp)&&entry>e20&&p.slice(-6,-1).some(v=>v<=e20*1.001)&&s12>0;
  const pullShort=(trendDown||mediumDown)&&entry<e20&&p.slice(-6,-1).some(v=>v>=e20*.999)&&s12<0;
@@ -49,34 +48,45 @@ function production(prices:number[],cfg:StrategyConfig):StrategySignal{
  const shortScore=(trendDown?20:mediumDown?14:0)+(e9<e20?8:0)+(momentumShort?20:0)+(breakoutShort?18:0)+(pullShort?15:0)+(rrsi>=28&&rrsi<=52?7:0)+(costAware?4:0)+(trendQualityShort?8:0);
 
  const effectiveMinScore=Math.max(85,cfg.minScore);
- const longOk=(trendUp||mediumUp)&&trendQualityLong&&expansionQuality&&(momentumLong||breakoutLong||pullLong)&&rrsi>=48&&rrsi<=72&&costAware&&notExtended&&impulseLong;
- const shortOk=(trendDown||mediumDown)&&trendQualityShort&&expansionQuality&&(momentumShort||breakoutShort||pullShort)&&rrsi>=28&&rrsi<=52&&costAware&&notExtended&&impulseShort;
+ // V15 separates continuation and breakout setups. The old implementation required
+ // impulse confirmation for every setup, which made otherwise valid EMA pullbacks
+ // disappear. A setup still needs trend quality, cost-aware volatility, controlled
+ // extension and a concrete continuation/breakout trigger.
+ const continuationLong=(trendUp||mediumUp)&&trendQualityLong&&costAware&&notExtended&&momentumLong&&rrsi>=48&&rrsi<=72;
+ const continuationShort=(trendDown||mediumDown)&&trendQualityShort&&costAware&&notExtended&&momentumShort&&rrsi>=28&&rrsi<=52;
+ const breakoutSetupLong=(trendUp||mediumUp)&&trendQualityLong&&costAware&&expansionQuality&&notExtended&&breakoutLong&&impulseLong&&rrsi>=48&&rrsi<=72;
+ const breakoutSetupShort=(trendDown||mediumDown)&&trendQualityShort&&costAware&&expansionQuality&&notExtended&&breakoutShort&&impulseShort&&rrsi>=28&&rrsi<=52;
+ const pullbackLong=(trendUp||mediumUp)&&trendQualityLong&&costAware&&notExtended&&pullLong&&rrsi>=46&&rrsi<=70;
+ const pullbackShort=(trendDown||mediumDown)&&trendQualityShort&&costAware&&notExtended&&pullShort&&rrsi>=30&&rrsi<=54;
+ const longOk=continuationLong||breakoutSetupLong||pullbackLong;
+ const shortOk=continuationShort||breakoutSetupShort||pullbackShort;
 
  let side:Side,score:number,reasons:string[];
  if(longOk&&longScore>=effectiveMinScore){
    side='LONG';score=longScore;
-   reasons=[trendUp?'bullish EMA regime':'positive EMA/momentum regime',momentumLong?'multi-horizon momentum':'',breakoutLong?'volatility-cleared 20-bar breakout':pullLong?'EMA20 pullback/reclaim':'EMA9/20 confirmation','trend persistence confirmed','RSI confirmation','cost-aware volatility','controlled extension','impulse confirmation'].filter(Boolean);
+   reasons=[trendUp?'bullish EMA regime':'positive EMA/momentum regime',momentumLong?'multi-horizon momentum':'',breakoutSetupLong?'volatility-cleared 20-bar breakout':pullbackLong?'EMA20 pullback/reclaim':'EMA continuation','trend persistence confirmed','RSI confirmation','cost-aware volatility','controlled extension',impulseLong?'impulse confirmation':''].filter(Boolean);
  }else if(shortOk&&shortScore>=effectiveMinScore){
    side='SHORT';score=shortScore;
-   reasons=[trendDown?'bearish EMA regime':'negative EMA/momentum regime',momentumShort?'multi-horizon momentum':'',breakoutShort?'volatility-cleared 20-bar breakdown':pullShort?'EMA20 pullback/reclaim':'EMA9/20 confirmation','trend persistence confirmed','RSI confirmation','cost-aware volatility','controlled extension','impulse confirmation'].filter(Boolean);
+   reasons=[trendDown?'bearish EMA regime':'negative EMA/momentum regime',momentumShort?'multi-horizon momentum':'',breakoutSetupShort?'volatility-cleared 20-bar breakdown':pullbackShort?'EMA20 pullback/reclaim':'EMA continuation','trend persistence confirmed','RSI confirmation','cost-aware volatility','controlled extension',impulseShort?'impulse confirmation':''].filter(Boolean);
  }else return wait(entry,['Production setup below quality threshold'],Math.max(longScore,shortScore));
 
- // Use a realistic structural floor so the nominal 10R/15R objective is not created by an unrealistically tiny stop.
+ // Keep the structural stop intact. The prior version compressed a large structural
+ // stop down to 0.85 ATR, which could place the stop inside the recent swing and
+ // artificially inflate the advertised R multiple.
  const recent=p.slice(-8),swingLow=Math.min(...recent),swingHigh=Math.max(...recent);
- const floor=Math.max(entry*0.0008,a*0.35),atrCap=a*0.85;
+ const floor=Math.max(entry*0.0008,a*0.35);
  const rawRisk=side==='LONG'?Math.max(entry-swingLow,floor):Math.max(swingHigh-entry,floor);
- const dist=clamp(rawRisk,floor,Math.max(floor,atrCap));
+ const dist=Math.max(rawRisk,floor);
 
- // 15R is reserved for exceptionally persistent/clean trends. Otherwise the production objective is 10R.
  const ultraQuality=score>=94&&eff24>=.50&&eff48>=.38&&separation>=.25&&volatilityExpansion>=.90&&volatilityExpansion<=1.80;
  const riskReward=cfg.riskReward!==undefined?clamp(cfg.riskReward,10,15):(ultraQuality?15:10);
  const targetDistance=dist*riskReward;
- const pathCapacity=a*(6+12*eff24+4*Math.max(0,separation));
+ const pathCapacity=a*(8+14*eff24+5*Math.max(0,separation));
  const targetPathOk=targetDistance<=pathCapacity;
  if(!targetPathOk)return wait(entry,['Target path is not supported by current trend persistence'],score);
 
  const stopLoss=side==='LONG'?entry-dist:entry+dist,takeProfit=side==='LONG'?entry+targetDistance:entry-targetDistance;
- return{action:side,score:Math.round(clamp(score,0,100)),confidence:Math.round(clamp(score,0,100)),strategy:'Production Regime Breakout v14',entry,stopLoss,takeProfit,riskReward,reasons:[...reasons,`risk-normalized ${riskReward}R target`,`trend efficiency ${(eff24*100).toFixed(0)}%`,`score ${Math.round(score)}/100`]};
+ return{action:side,score:Math.round(clamp(score,0,100)),confidence:Math.round(clamp(score,0,100)),strategy:'Production Regime Breakout v15',entry,stopLoss,takeProfit,riskReward,reasons:[...reasons,`risk-normalized ${riskReward}R target`,`trend efficiency ${(eff24*100).toFixed(0)}%`,`score ${Math.round(score)}/100`]};
 }
 
 export function evaluateProductionStrategy(prices:number[],config:Partial<StrategyConfig>={}):StrategySignal{return production(prices,{...DEFAULT_CONFIG,...config});}
