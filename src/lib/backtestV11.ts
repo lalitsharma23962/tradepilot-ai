@@ -51,8 +51,6 @@ function simulate(c:Candle[],cfg:BacktestConfig,start:number,end:number):Strateg
       open.bars++;
       const favorable=open.side===1?b.high-open.entry:open.entry-b.low;
       const r=favorable/Math.max(open.initialRisk,1e-12);
-
-      // Protect the asymmetric runner progressively instead of waiting for a rare fixed 10R/15R hit.
       if(r>=4){
         const trail=open.side===1?b.close-open.initialRisk*1.5:b.close+open.initialRisk*1.5;
         if(open.side===1)open.stop=Math.max(open.stop,trail);else open.stop=Math.min(open.stop,trail);
@@ -84,7 +82,6 @@ function simulate(c:Candle[],cfg:BacktestConfig,start:number,end:number):Strateg
         const side=signal.action==='LONG'?1:-1;
         const entry=b.open*(1+side*slip);
         const signalAtr=atr(hist);
-        // Do not accept a large next-candle gap that invalidates the signal's entry structure.
         const entryGap=Math.abs(b.open-signal.entry)/Math.max(signalAtr,entry*0.000001);
         if(entryGap>0.35)continue;
         const risk=Math.max(Math.abs(entry-signal.stopLoss),entry*0.0005);
@@ -106,7 +103,7 @@ function simulate(c:Candle[],cfg:BacktestConfig,start:number,end:number):Strateg
 
 function foldPass(report:StrategyResult){return report.trades>=MIN_FOLD_TRADES&&report.returnPct>0&&report.profitFactor>=MIN_PF&&report.maxDrawdownPct<=MAX_DD;}
 
-export async function runValidation(symbol='BTCUSDT',interval='1h',cfg:Partial<BacktestConfig>={}):Promise<ValidationReport>{
+export async function runValidation(symbol='BTCUSDT',interval='1h',cfg:Partial<BacktestConfig>={},_selectedStrategyId?:string):Promise<ValidationReport>{
   const config={initialCapital:10000,feeBps:10,slippageBps:2,riskPerTradePct:.25,maxPositionPct:20,leverage:10,stopAtr:1.15,rewardRisk:10,maxBarsInTrade:240,...cfg};
   const fetched=await fetchHistoricalCandles(symbol,interval,MAX_HISTORY_BARS+5);
   const candles=fetched.slice(-MAX_HISTORY_BARS);
