@@ -1,6 +1,6 @@
 # TradePilot AI — 2026 research protocol
 
-Updated: 2026-08-05
+Updated: 2026-08-07
 
 ## What changed
 
@@ -34,6 +34,19 @@ The selection protocol is now:
 - Volatility contraction breakout
 - ATR channel trend
 - Z-score mean reversion
+
+## v26 production strategy architecture
+
+The strict production strategy now uses four independent, explainable high-confidence setup families instead of one narrow conjunction:
+
+1. Trend continuation.
+2. Fresh range breakout/breakdown.
+3. Breakout retest / EMA pullback continuation.
+4. Compression-to-expansion continuation.
+
+All families share the same hard safety requirements: directional regime, multi-horizon momentum, cost-aware volatility, controlled extension, trend-efficiency/directional-consistency checks, structural-stop integrity, and a 10R/15R target-path capacity guard. The production confidence floor remains 90/100 and the paper-trading validation gate remains unchanged.
+
+The strategy does **not** lower the validation gate merely to increase trade count. More opportunities are allowed only through independent setup structures that still satisfy the same quality and risk constraints.
 
 ## Important market-data boundary
 
