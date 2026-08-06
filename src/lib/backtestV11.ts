@@ -2,7 +2,7 @@ import { fetchHistoricalCandles, type Candle, type BacktestConfig, type Strategy
 import { evaluateProductionStrategy } from './strategy';
 import { runValidation as runResearchValidation } from './backtestV8';
 
-/** V16: strict production validation for the high-RR paper strategy. */
+/** V17: strict production validation for the high-RR paper strategy. */
 const MAX_HISTORY_BARS = 20000;
 const PRE_OOS = 0.70;
 const FOLDS = 3;
@@ -27,7 +27,7 @@ function summarize(id:string, returns:number[], initial:number):StrategyResult {
   let equity=initial, peak=initial, dd=0;
   for(const r of returns){ equity*=1+r/100; peak=Math.max(peak,equity); dd=Math.max(dd,(peak-equity)/peak*100); }
   const ret=(equity/initial-1)*100, wr=returns.length?wins.length/returns.length*100:0, avg=mean(returns), neg=sd(losses), s=sd(returns), sh=s?Math.sqrt(returns.length)*avg/s:0, so=neg?Math.sqrt(returns.length)*avg/neg:0;
-  return {id,name:'Production Regime Breakout v13',trades:returns.length,wins:wins.length,losses:losses.length,winRate:wr,profitFactor:pf,netPnl:equity-initial,returnPct:ret,maxDrawdownPct:dd,avgTrade:avg,score:(ret+Math.min(pf,5)*2.5+sh*2+so*.75+wr/25-dd*.8)*Math.min(1,returns.length/30),tradeReturnsPct:returns,sharpe:sh,sortino:so,calmar:dd?ret/dd:0,expectancy:avg,turnoverPct:returns.reduce((a,b)=>a+Math.abs(b),0)};
+  return {id,name:'Production Regime Breakout v14',trades:returns.length,wins:wins.length,losses:losses.length,winRate:wr,profitFactor:pf,netPnl:equity-initial,returnPct:ret,maxDrawdownPct:dd,avgTrade:avg,score:(ret+Math.min(pf,5)*2.5+sh*2+so*.75+wr/25-dd*.8)*Math.min(1,returns.length/30),tradeReturnsPct:returns,sharpe:sh,sortino:so,calmar:dd?ret/dd:0,expectancy:avg,turnoverPct:returns.reduce((a,b)=>a+Math.abs(b),0)};
 }
 
 function monte(returns:number[],runs=5000){
@@ -53,7 +53,6 @@ function simulate(c:Candle[],cfg:BacktestConfig,start:number,end:number):Strateg
       const r=favorable/Math.max(open.initialRisk,1e-12);
 
       // Protect the asymmetric runner progressively instead of waiting for a rare fixed 10R/15R hit.
-      // This preserves the high-RR objective while allowing realized winners to pay for the many small losses.
       if(r>=4){
         const trail=open.side===1?b.close-open.initialRisk*1.5:b.close+open.initialRisk*1.5;
         if(open.side===1)open.stop=Math.max(open.stop,trail);else open.stop=Math.min(open.stop,trail);
@@ -84,7 +83,11 @@ function simulate(c:Candle[],cfg:BacktestConfig,start:number,end:number):Strateg
       if(signal.action!=='WAIT'&&signal.riskReward>=LOW_RR){
         const side=signal.action==='LONG'?1:-1;
         const entry=b.open*(1+side*slip);
-        const risk=Math.max(Math.abs(signal.entry-signal.stopLoss),entry*0.0005);
+        const signalAtr=atr(hist);
+        // Do not accept a large next-candle gap that invalidates the signal's entry structure.
+        const entryGap=Math.abs(b.open-signal.entry)/Math.max(signalAtr,entry*0.000001);
+        if(entryGap>0.35)continue;
+        const risk=Math.max(Math.abs(entry-signal.stopLoss),entry*0.0005);
         const rr=signal.score>=ULTRA_SCORE?HIGH_RR:LOW_RR;
         const riskBudget=Math.max(equity,0)*cfg.riskPerTradePct/100;
         const maxNotional=Math.max(equity,0)*cfg.maxPositionPct/100*Math.max(1,cfg.leverage);
@@ -121,7 +124,7 @@ export async function runValidation(symbol='BTCUSDT',interval='1h',cfg:Partial<B
   const test=allThree?simulate(candles,config,pre,n):null;
   const mc=test?monte(test.tradeReturnsPct):monte([]);
   const reasons:string[]=[];
-  if(!allThree){const passed=folds.filter(foldPass).length;reasons.push(`Production Regime Breakout v13 did not pass all 3 pre-OOS stability folds (${passed}/3 passed; minimum ${MIN_FOLD_TRADES} trades/fold, PF >= ${MIN_PF}, positive return, DD <= ${MAX_DD}%).`);}
+  if(!allThree){const passed=folds.filter(foldPass).length;reasons.push(`Production Regime Breakout v14 did not pass all 3 pre-OOS stability folds (${passed}/3 passed; minimum ${MIN_FOLD_TRADES} trades/fold, PF >= ${MIN_PF}, positive return, DD <= ${MAX_DD}%).`);}
   if(test&&test.trades<MIN_TEST_TRADES)reasons.push(`OOS trades ${test.trades} < ${MIN_TEST_TRADES}.`);
   if(test&&test.profitFactor<MIN_PF)reasons.push(`OOS PF ${test.profitFactor.toFixed(2)} < ${MIN_PF}.`);
   if(test&&test.returnPct<=0)reasons.push(`OOS return ${test.returnPct.toFixed(2)}% is not positive.`);
@@ -134,5 +137,5 @@ export async function runValidation(symbol='BTCUSDT',interval='1h',cfg:Partial<B
   const strategies=[validation,...strategyRows].sort((a,b)=>b.score-a.score);
   const gate:ValidationGate={status:reasons.length?'REJECTED':'VALIDATED',reasons,minimumTestTrades:MIN_TEST_TRADES,minimumProfitFactor:MIN_PF,minimumTestReturnPct:0,maximumTestDrawdownPct:MAX_DD,maximumMonteCarloLossProbability:MAX_MC_LOSS};
   const step=interval==='1h'?3600000:interval==='4h'?14400000:interval==='15m'?900000:interval==='5m'?300000:60000;
-  return{symbol,interval,candles:n,dataQuality:{startTime:candles[0].openTime,endTime:candles.at(-1)!.openTime,durationDays:(candles.at(-1)!.openTime-candles[0].openTime)/864e5,expectedIntervalMinutes:step/60000,gaps:candles.slice(1).filter((x,i)=>x.openTime-candles[i].openTime!==step).length,duplicateTimestamps:n-new Set(candles.map(x=>x.openTime)).size},costs:{feeBps:config.feeBps,slippageBps:config.slippageBps,roundTripPct:2*(config.feeBps+config.slippageBps)/10000},strategies,walkForward:{trainBars:foldSize,validationBars:foldSize,testBars:n-pre,selectedStrategy:allThree?'Production Regime Breakout v13':'No eligible strategy',validation:allThree?validation:null,test},foldDiagnostics,monteCarlo:mc,gate,generatedAt:new Date().toISOString(),research:{asOf:new Date().toISOString(),dataWindowBars:n,selectionMethod:'Strict production strategy; 3 non-overlapping pre-OOS folds; 10R/15R targets with risk compression and protected runner; all 3 folds required; untouched 30% OOS; costs included; no manual OOS tuning.',coverage:['10R target for score 85-93','15R target for score 94+','risk-compressed structural stop','break-even at 1.25R','lock 1.25R at 2.5R','ATR-independent runner protection from 4R','strict 3-fold stability gate','untouched 30% OOS','5,000-run Monte Carlo loss test']}};
+  return{symbol,interval,candles:n,dataQuality:{startTime:candles[0].openTime,endTime:candles.at(-1)!.openTime,durationDays:(candles.at(-1)!.openTime-candles[0].openTime)/864e5,expectedIntervalMinutes:step/60000,gaps:candles.slice(1).filter((x,i)=>x.openTime-candles[i].openTime!==step).length,duplicateTimestamps:n-new Set(candles.map(x=>x.openTime)).size},costs:{feeBps:config.feeBps,slippageBps:config.slippageBps,roundTripPct:2*(config.feeBps+config.slippageBps)/10000},strategies,walkForward:{trainBars:foldSize,validationBars:foldSize,testBars:n-pre,selectedStrategy:allThree?'Production Regime Breakout v14':'No eligible strategy',validation:allThree?validation:null,test},foldDiagnostics,monteCarlo:mc,gate,generatedAt:new Date().toISOString(),research:{asOf:new Date().toISOString(),dataWindowBars:n,selectionMethod:'Strict production strategy; 3 non-overlapping pre-OOS folds; 10R/15R targets with trend-persistence and target-path filters; next-candle gap protection; risk-normalized structural stop; all 3 folds required; untouched 30% OOS; costs included; no manual OOS tuning.',coverage:['10R target for score 85-93','15R target for ultra-quality score 94+','trend-efficiency and directional-consistency filter','volatility-cleared breakouts','controlled extension filter','next-candle gap protection','risk-normalized structural stop','break-even at 1.25R','lock 1.25R at 2.5R','ATR-independent runner protection from 4R','strict 3-fold stability gate','untouched 30% OOS','5,000-run Monte Carlo loss test']}};
 }
