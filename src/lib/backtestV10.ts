@@ -2,18 +2,31 @@ import { runValidation as runV8 } from './backtestV8';
 import type { BacktestConfig, ValidationReport, FoldDiagnostic } from './backtestV6';
 
 /**
- * V10: stability-first, pre-OOS-only strategy/profile selection.
+ * V11: robustness-first, pre-OOS-only profile selection.
  *
- * The final OOS segment and Monte Carlo output are never used for selection.
- * A candidate must pass every pre-OOS stability fold before V10 will force it
- * into the V8 engine for the single untouched OOS evaluation.
+ * The final 30% OOS segment and Monte Carlo output are never used to select
+ * a strategy/profile. A candidate must pass all three non-overlapping
+ * pre-OOS stability folds before V8 is allowed to run the untouched OOS test.
+ *
+ * This version expands the exit/risk profile search because V10 proved that
+ * the original five reward-risk profiles were not sufficient to find a
+ * strategy that was stable across all three pre-OOS folds.
  */
 const PROFILES = [
-  { rewardRisk: 1.6 },
-  { rewardRisk: 2.0 },
-  { rewardRisk: 2.4 },
-  { rewardRisk: 2.8 },
-  { rewardRisk: 3.2 },
+  { rewardRisk: 1.6, stopAtr: 1.25 },
+  { rewardRisk: 2.0, stopAtr: 1.25 },
+  { rewardRisk: 2.4, stopAtr: 1.25 },
+  { rewardRisk: 1.6, stopAtr: 1.50 },
+  { rewardRisk: 2.0, stopAtr: 1.50 },
+  { rewardRisk: 2.4, stopAtr: 1.50 },
+  { rewardRisk: 1.6, stopAtr: 1.75 },
+  { rewardRisk: 2.0, stopAtr: 1.75 },
+  { rewardRisk: 2.4, stopAtr: 1.75 },
+  { rewardRisk: 1.6, stopAtr: 2.00 },
+  { rewardRisk: 2.0, stopAtr: 2.00 },
+  { rewardRisk: 2.4, stopAtr: 2.00 },
+  { rewardRisk: 2.0, stopAtr: 2.25 },
+  { rewardRisk: 2.4, stopAtr: 2.25 },
 ] as const;
 
 const MIN_PF = 1.05;
@@ -29,7 +42,6 @@ function foldsFor(report: ValidationReport, strategyId: string): FoldDiagnostic[
   const direct = report.foldDiagnostics?.[strategyId];
   if (Array.isArray(direct)) return direct;
 
-  // Be tolerant of older diagnostics keyed by display name.
   const strategy = report.strategies.find((s) => s.id === strategyId);
   if (!strategy) return [];
   const byName = report.foldDiagnostics?.[strategy.name];
@@ -58,24 +70,28 @@ function stabilityScore(report: ValidationReport, folds: FoldDiagnostic[]): numb
   const min = (xs: number[]) => Math.min(...xs);
   const max = (xs: number[]) => Math.max(...xs);
 
-  // Reward consistency, not a single exceptional fold.
   const meanPf = mean(pf);
+  const worstPf = min(pf);
   const meanRet = mean(ret);
   const worstRet = min(ret);
-  const worstPf = min(pf);
   const worstDd = max(dd);
   const meanTrades = mean(trades);
   const retSpread = max(ret) - min(ret);
+  const ddSpread = max(dd) - min(dd);
   const minimumTrades = minFoldTrades(report);
 
+  // Prefer a profile that is good in its weakest fold, not one that wins by
+  // having a single exceptional fold. Drawdown and return dispersion are
+  // explicitly penalized to reduce regime-specific overfitting.
   return (
-    meanPf * 30 +
-    worstPf * 25 +
-    meanRet * 2 +
-    worstRet * 4 +
+    worstRet * 5 +
+    worstPf * 30 +
+    meanPf * 15 +
+    meanRet * 1.5 +
     Math.min(meanTrades / Math.max(minimumTrades, 1), 4) * 2 -
-    worstDd * 0.8 -
-    retSpread * 0.25
+    worstDd * 0.9 -
+    retSpread * 0.35 -
+    ddSpread * 0.15
   );
 }
 
@@ -111,7 +127,7 @@ function diagnosticReason(reports: ValidationReport[]): string {
         f.maxDrawdownPct <= MAX_DD,
       ).length;
       const score = folds.reduce((sum, f) =>
-        sum + Math.min(f.profitFactor, 3) * 10 + f.returnPct - f.maxDrawdownPct * 0.25,
+        sum + Math.min(f.profitFactor, 3) * 10 + f.returnPct * 2 - f.maxDrawdownPct * 0.35,
       0);
       if (!best || passed > best.passed || (passed === best.passed && score > best.score)) {
         best = { report, strategy: strategy.name, passed, score };
@@ -130,25 +146,23 @@ export async function runValidation(
   cfg: Partial<BacktestConfig> = {},
   selectedStrategyId?: string,
 ): Promise<ValidationReport> {
-  // If the UI/operator explicitly asks for a strategy, preserve that request;
-  // V8 still applies the unchanged hard validation gate and untouched OOS test.
   if (selectedStrategyId) {
-    return runV8(symbol, interval, { ...cfg, rewardRisk: PROFILES[0].rewardRisk }, selectedStrategyId);
+    return runV8(symbol, interval, { ...cfg, rewardRisk: PROFILES[0].rewardRisk, stopAtr: PROFILES[0].stopAtr }, selectedStrategyId);
   }
 
-  // First pass: evaluate every exit profile independently. Only pre-OOS fold
-  // diagnostics are inspected here. The untouched final OOS segment is never
-  // used to choose a profile or strategy.
+  // Evaluate every profile independently. Only the three pre-OOS stability
+  // folds are inspected during this search; the final 30% stays untouched.
   const reports: ValidationReport[] = [];
   for (const profile of PROFILES) {
-    reports.push(await runV8(symbol, interval, { ...cfg, rewardRisk: profile.rewardRisk }));
+    reports.push(await runV8(symbol, interval, {
+      ...cfg,
+      rewardRisk: profile.rewardRisk,
+      stopAtr: profile.stopAtr,
+    }));
   }
 
   const candidate = chooseCandidate(reports);
   if (!candidate) {
-    // Nothing demonstrated stable pre-OOS behavior. Return the most useful
-    // diagnostic report, but do not manufacture an eligible strategy or run
-    // an OOS test for a strategy that failed the stability screen.
     const diagnostic = [...reports].sort((a, b) => {
       const score = (r: ValidationReport) => {
         const values = Object.values(r.foldDiagnostics ?? {}).flat();
@@ -156,7 +170,8 @@ export async function runValidation(
         const passed = values.filter((f) => f.passed).length;
         const avgPf = values.reduce((s, f) => s + Math.min(f.profitFactor, 3), 0) / values.length;
         const avgRet = values.reduce((s, f) => s + f.returnPct, 0) / values.length;
-        return passed * 100 + avgPf * 10 + avgRet;
+        const avgDd = values.reduce((s, f) => s + f.maxDrawdownPct, 0) / values.length;
+        return passed * 100 + avgPf * 10 + avgRet * 2 - avgDd;
       };
       return score(b) - score(a);
     })[0];
@@ -180,12 +195,13 @@ export async function runValidation(
     };
   }
 
-  // Second pass: re-run V8 once for the winning pre-OOS-only strategy/profile.
-  // V8 performs the one untouched final OOS test and Monte Carlo gate.
+  // Only now run V8 a second time for the winning pre-OOS profile/strategy.
+  // This is the single untouched final OOS evaluation.
+  const profile = PROFILES[candidate.reportIndex];
   return runV8(
     symbol,
     interval,
-    { ...cfg, rewardRisk: PROFILES[candidate.reportIndex].rewardRisk },
+    { ...cfg, rewardRisk: profile.rewardRisk, stopAtr: profile.stopAtr },
     candidate.strategyId,
   );
 }
