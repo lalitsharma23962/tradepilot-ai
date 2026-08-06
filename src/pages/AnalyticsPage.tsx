@@ -1,4 +1,4 @@
-import { useMemo, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import { Area, AreaChart, CartesianGrid, ResponsiveContainer, Tooltip, XAxis, YAxis } from 'recharts';
 import { useApp } from '@/lib/store';
 import * as api from '@/lib/api';
@@ -11,15 +11,28 @@ export function AnalyticsPage() {
   const [report, setReport] = useState<ValidationReport | null>(null);
   const [running, setRunning] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [elapsed, setElapsed] = useState(0);
   const equityCurve = useMemo(() => snapshots.map((s,i)=>({idx:i,equity:s.equity,ts:fmtTime(s.ts)})), [snapshots]);
+
+  useEffect(() => {
+    if (!running) return;
+    const started = Date.now();
+    setElapsed(0);
+    const timer = window.setInterval(() => setElapsed(Math.floor((Date.now() - started) / 1000)), 1000);
+    return () => window.clearInterval(timer);
+  }, [running]);
+
   const runValidation = async () => {
-    setRunning(true); setError(null);
+    if (running) return;
+    setRunning(true); setError(null); setReport(null);
     try {
       const riskPerTradePct=account?.risk_level==='Conservative'?0.15:account?.risk_level==='Aggressive'?0.35:0.25;
       const leverage=Math.max(1,Math.min(10,Number(account?.leverage??1)));
       const maxPositionPct=Math.max(1,Math.min(20,Number(account?.max_allocation_pct??20)));
       const res=await api.validationApi('BTCUSDT','1h',{initialCapital:10000,feeBps:Number(account?.fee_bps??10),slippageBps:Number(account?.slippage_bps??2),maxPositionPct,leverage,riskPerTradePct});
       if(res.ok) setReport(res.data ?? null); else setError(res.error ?? 'Validation failed.');
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Validation failed.');
     } finally { setRunning(false); }
   };
   if (conn==='loading'&&!performance) return <div className="p-6"><LoadingState message="Loading analytics…"/></div>;
@@ -28,9 +41,10 @@ export function AnalyticsPage() {
     <div className="grid grid-cols-2 gap-4 lg:grid-cols-4"><StatCard label="Best Trade" value={fmtMoney(performance.best_trade)} tone="positive"/><StatCard label="Worst Trade" value={fmtMoney(performance.worst_trade)} tone="negative"/><StatCard label="Avg Trade" value={fmtMoney(performance.avg_trade)} tone={performance.avg_trade>=0?'positive':'negative'}/><StatCard label="Max Drawdown" value={fmtMoney(performance.max_drawdown)} tone="negative"/></div>
     <Card><CardHeader title="Paper Equity Curve" subtitle="Cost-aware paper-trading equity" action={<Badge tone="accent">PAPER</Badge>}/><CardBody>{equityCurve.length<2?<EmptyState title="Not enough history yet" message="Start the paper engine to build snapshots."/>:<ResponsiveContainer width="100%" height={320}><AreaChart data={equityCurve}><defs><linearGradient id="anGrad" x1="0" y1="0" x2="0" y2="1"><stop offset="5%" stopColor="#10b981" stopOpacity={0.4}/><stop offset="95%" stopColor="#10b981" stopOpacity={0}/></linearGradient></defs><CartesianGrid strokeDasharray="3 3" stroke="#1e293b"/><XAxis dataKey="ts" tick={{fontSize:10,fill:'#64748b'}}/><YAxis tick={{fontSize:10,fill:'#64748b'}} domain={['auto','auto']}/><Tooltip/><Area type="monotone" dataKey="equity" stroke="#10b981" strokeWidth={2} fill="url(#anGrad)"/></AreaChart></ResponsiveContainer>}</CardBody></Card></> : <EmptyState title="No paper results yet" message="Run the historical validation first; paper results will appear after the engine trades."/>}
 
-    <Card><CardHeader title="Historical Validation Lab" subtitle="Up to 40,000 Binance candles → fees + slippage → three non-overlapping pre-OOS stability folds → untouched 30% OOS → Monte Carlo" action={<Button onClick={runValidation} disabled={running}>{running?'Running…':'Run validation'}</Button>}/><CardBody className="space-y-4">
-      <div className="grid grid-cols-2 gap-3 sm:grid-cols-4"><div className="rounded-lg bg-slate-800/40 p-3"><p className="text-[11px] text-slate-500">Data</p><p className="text-sm font-semibold">BTCUSDT · 1h</p></div><div className="rounded-lg bg-slate-800/40 p-3"><p className="text-[11px] text-slate-500">Strategy selection</p><p className="text-sm font-semibold text-sky-300">Automatic stability selection</p><p className="mt-1 text-[11px] text-slate-500">No manual OOS strategy hunting</p></div><div className="rounded-lg bg-slate-800/40 p-3"><p className="text-[11px] text-slate-500">Fee</p><p className="text-sm font-semibold">{Number(account?.fee_bps??10)} bps/side</p></div><div className="rounded-lg bg-slate-800/40 p-3"><p className="text-[11px] text-slate-500">Slippage</p><p className="text-sm font-semibold">{Number(account?.slippage_bps??2)} bps/side</p></div></div>
+    <Card><CardHeader title="Historical Validation Lab" subtitle="20,000 Binance candles → fees + slippage → three non-overlapping pre-OOS stability folds → untouched 30% OOS → Monte Carlo" action={<Button onClick={runValidation} disabled={running}>{running?`Validating… ${elapsed}s`:'Run validation'}</Button>}/><CardBody className="space-y-4">
+      <div className="grid grid-cols-2 gap-3 sm:grid-cols-4"><div className="rounded-lg bg-slate-800/40 p-3"><p className="text-[11px] text-slate-500">Data</p><p className="text-sm font-semibold">BTCUSDT · 1h · 20,000 candles</p></div><div className="rounded-lg bg-slate-800/40 p-3"><p className="text-[11px] text-slate-500">Strategy selection</p><p className="text-sm font-semibold text-sky-300">Automatic stability selection</p><p className="mt-1 text-[11px] text-slate-500">6 exit profiles · no manual OOS hunting</p></div><div className="rounded-lg bg-slate-800/40 p-3"><p className="text-[11px] text-slate-500">Fee</p><p className="text-sm font-semibold">{Number(account?.fee_bps??10)} bps/side</p></div><div className="rounded-lg bg-slate-800/40 p-3"><p className="text-[11px] text-slate-500">Slippage</p><p className="text-sm font-semibold">{Number(account?.slippage_bps??2)} bps/side</p></div></div>
       <div className="rounded-lg border border-sky-900/50 bg-sky-950/20 px-4 py-3 text-xs text-slate-300">The validator selects a candidate only after it passes all three non-overlapping pre-OOS stability folds. A strategy must be profitable with PF ≥ 1.05 and sufficient trade count in every fold before it is eligible for automatic OOS selection. The final 30% of history remains completely untouched and is used only for the final gate.</div>
+      {running&&<div className="rounded-lg border border-sky-800/60 bg-sky-950/30 px-4 py-3 text-xs text-sky-200">Validation is running the bounded 6-profile pre-OOS sweep. Elapsed time: <strong>{elapsed}s</strong>. Keep this tab open; do not start the paper bot while validation is running.</div>}
       {error&&<div className="rounded-lg bg-red-950/40 px-3 py-2 text-xs text-red-300">{error}</div>}
       {report&&<>
         <div className={`rounded-lg border px-4 py-3 ${report.gate.status==='VALIDATED'?'border-emerald-800 bg-emerald-950/30':'border-red-800 bg-red-950/30'}`}>
