@@ -52,8 +52,6 @@ function simulate(c:Candle[],cfg:BacktestConfig,start:number,end:number):Strateg
     let closedThisBar=false;
     if(open){
       open.bars++;
-      // A high-RR trade is only a win when the actual 10R/15R target is reached.
-      // No hidden 0.5R/2R/3R profit locks are allowed in validation.
       const stopHit=open.side===1?b.low<=open.stop:b.high>=open.stop;
       const targetHit=open.side===1?b.high>=open.target:b.low<=open.target;
       const timeout=open.bars>=cfg.maxBarsInTrade;
@@ -78,8 +76,6 @@ function simulate(c:Candle[],cfg:BacktestConfig,start:number,end:number):Strateg
         const entryGap=Math.abs(b.open-signal.entry)/Math.max(signalAtr,entry*0.000001);
         if(entryGap>0.35)continue;
         const structuralRisk=Math.abs(entry-signal.stopLoss);
-        // Never compress a structural stop. A setup whose valid stop is too wide
-        // is rejected; moving it inside the swing invalidates the trade thesis.
         if(structuralRisk>signalAtr*MAX_STRUCTURAL_RISK_ATR)continue;
         const volatilityRisk=signalAtr*0.65;
         const costRisk=entry*roundTripCost*1.75;
@@ -100,6 +96,7 @@ function simulate(c:Candle[],cfg:BacktestConfig,start:number,end:number):Strateg
 }
 
 function foldPass(report:StrategyResult){return report.trades>=MIN_FOLD_TRADES&&report.returnPct>0&&report.profitFactor>=MIN_PF&&report.maxDrawdownPct<=MAX_DD;}
+function foldReason(f:StrategyResult,index:number){return `fold ${index+1}: ${f.trades} trades, PF ${f.profitFactor.toFixed(2)}, return ${f.returnPct.toFixed(2)}%, DD ${f.maxDrawdownPct.toFixed(2)}%`;}
 
 export async function runValidation(symbol='BTCUSDT',interval='1h',cfg:Partial<BacktestConfig>={},_selectedStrategyId?:string):Promise<ValidationReport>{
   const config={initialCapital:10000,feeBps:10,slippageBps:2,riskPerTradePct:.25,maxPositionPct:20,leverage:10,stopAtr:1.15,rewardRisk:10,maxBarsInTrade:interval==='5m'?1440:interval==='15m'?480:interval==='4h'?180:240,...cfg};
@@ -119,7 +116,11 @@ export async function runValidation(symbol='BTCUSDT',interval='1h',cfg:Partial<B
   const test=allThree?simulate(candles,config,pre,n):null;
   const mc=test?monte(test.tradeReturnsPct):monte([]);
   const reasons:string[]=[];
-  if(!allThree){const passed=folds.filter(foldPass).length;reasons.push(`Production Regime Breakout v25 did not pass all 3 pre-OOS stability folds (${passed}/3 passed; minimum ${MIN_FOLD_TRADES} trades/fold, PF >= ${MIN_PF}, positive return, DD <= ${MAX_DD}%).`);}
+  if(!allThree){
+    const passed=folds.filter(foldPass).length;
+    if(folds.every(f=>f.trades===0)) reasons.push(`Production Regime Breakout v25 generated zero trades in all ${FOLDS} pre-OOS folds. The strategy is not eligible for paper trading.`);
+    else reasons.push(`Production Regime Breakout v25 did not pass all ${FOLDS} pre-OOS stability folds (${passed}/${FOLDS} passed). ${folds.map(foldReason).join(' | ')}`);
+  }
   if(test&&test.trades<MIN_TEST_TRADES)reasons.push(`OOS trades ${test.trades} < ${MIN_TEST_TRADES}.`);
   if(test&&test.profitFactor<MIN_PF)reasons.push(`OOS PF ${test.profitFactor.toFixed(2)} < ${MIN_PF}.`);
   if(test&&test.returnPct<=0)reasons.push(`OOS return ${test.returnPct.toFixed(2)}% is not positive.`);
