@@ -17,11 +17,10 @@ const directionalConsistency=(x:number[],side:1|-1)=>{if(x.length<2)return 0;con
 const dispersion=(x:number[])=>{if(x.length<2)return 0;const m=mean(x);return Math.sqrt(mean(x.map(v=>(v-m)**2)));};
 const wait=(entry:number,reasons:string[],score=0):StrategySignal=>({action:'WAIT',score:Math.round(clamp(score,0,100)),confidence:Math.round(clamp(score,0,100)),strategy:'No Trade',entry,stopLoss:entry,takeProfit:entry,riskReward:0,reasons});
 
-/** v23: high-RR regime model with execution-aligned capped structural risk.
- * The same bounded risk model is used by signal generation and validation.
- * Profit protection is deliberately delayed so a 10R/15R setup is not
- * converted into a stream of tiny 0.5R-1.5R exits before the thesis has time
- * to develop. The strict validation gate remains unchanged. */
+/** v25: high-RR regime model. Structural stops are never compressed into
+ * the middle of a swing. If the market requires a structural stop wider than
+ * the allowed risk envelope, the setup is rejected instead of manufacturing
+ * a tighter stop that is likely to be hit by ordinary noise. */
 function production(prices:number[],cfg:StrategyConfig):StrategySignal{
  const p=prices.filter(Number.isFinite).filter(v=>v>0).slice(-cfg.lookback),entry=p[p.length-1]??0;
  if(p.length<160||!entry)return wait(entry,['Not enough history']);
@@ -70,14 +69,15 @@ function production(prices:number[],cfg:StrategyConfig):StrategySignal{
  const floor=Math.max(entry*0.0008,a*0.55);
  const rawRisk=side==='LONG'?Math.max(entry-swingLow,floor):Math.max(swingHigh-entry,floor);
  const structuralCap=a*MAX_STRUCTURAL_RISK_ATR;
- const dist=Math.max(Math.min(rawRisk,structuralCap),floor,entry*roundTripCost*2.0);
+ if(rawRisk>structuralCap)return wait(entry,['Structural stop is too wide for the high-RR risk envelope'],score);
+ const dist=Math.max(rawRisk,floor,entry*roundTripCost*2.0);
  const ultraQuality=score>=96&&eff24>=.50&&eff48>=.35&&(side==='LONG'?consistencyLong:consistencyShort)>=.64&&separation>=.20&&volatilityExpansion>=.80&&volatilityExpansion<=1.85;
  const riskReward=cfg.riskReward!==undefined?clamp(cfg.riskReward,10,15):(ultraQuality?15:10);
  const targetDistance=dist*riskReward;
  const pathCapacity=a*(11+28*eff24+11*Math.max(0,separation)+7*Math.max(0,volatilityExpansion-1));
  if(targetDistance>pathCapacity)return wait(entry,['Target path is not supported by current trend persistence'],score);
  const stopLoss=side==='LONG'?entry-dist:entry+dist,takeProfit=side==='LONG'?entry+targetDistance:entry-targetDistance;
- return{action:side,score:Math.round(clamp(score,0,100)),confidence:Math.round(clamp(score,0,100)),strategy:'Production Regime Breakout v23',entry,stopLoss,takeProfit,riskReward,reasons:[...reasons,`risk-normalized ${riskReward}R target`,`structural risk cap ${MAX_STRUCTURAL_RISK_ATR.toFixed(2)} ATR`,`trend efficiency ${(eff24*100).toFixed(0)}%`,`score ${Math.round(score)}/100`]};
+ return{action:side,score:Math.round(clamp(score,0,100)),confidence:Math.round(clamp(score,0,100)),strategy:'Production Regime Breakout v25',entry,stopLoss,takeProfit,riskReward,reasons:[...reasons,`risk-normalized ${riskReward}R target`,`structural risk ceiling ${MAX_STRUCTURAL_RISK_ATR.toFixed(2)} ATR`,`trend efficiency ${(eff24*100).toFixed(0)}%`,`score ${Math.round(score)}/100`]};
 }
 
 export function evaluateProductionStrategy(prices:number[],config:Partial<StrategyConfig>={}):StrategySignal{return production(prices,{...DEFAULT_CONFIG,...config});}
