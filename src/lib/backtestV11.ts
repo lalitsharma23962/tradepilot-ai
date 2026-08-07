@@ -3,7 +3,10 @@ export type { BacktestConfig, StrategyResult, ValidationReport, ValidationGate, 
 import { evaluateProductionStrategy } from './strategy';
 import { TRADING_CONFIG } from './tradingConfig';
 
-const MAX_HISTORY_BARS=40000,PRE_OOS=TRADING_CONFIG.preOosFraction,FOLDS=TRADING_CONFIG.folds,LOOKBACK=TRADING_CONFIG.lookback,MIN_FOLD_TRADES=TRADING_CONFIG.minFoldTrades,MIN_TEST_TRADES=TRADING_CONFIG.minTestTrades,MIN_PF=TRADING_CONFIG.minProfitFactor,MAX_DD=TRADING_CONFIG.maxDrawdownPct,MAX_MC_LOSS=TRADING_CONFIG.maxMonteCarloLossProbability,MIN_SCORE=TRADING_CONFIG.minScore;
+// 60,000 completed 5m candles is ~208 days. This increases the evidence window
+// without weakening the strict fold/OOS gate or pretending that a short regime
+// sample is enough to validate a paper strategy.
+const MAX_HISTORY_BARS=60000,PRE_OOS=TRADING_CONFIG.preOosFraction,FOLDS=TRADING_CONFIG.folds,LOOKBACK=TRADING_CONFIG.lookback,MIN_FOLD_TRADES=TRADING_CONFIG.minFoldTrades,MIN_TEST_TRADES=TRADING_CONFIG.minTestTrades,MIN_PF=TRADING_CONFIG.minProfitFactor,MAX_DD=TRADING_CONFIG.maxDrawdownPct,MAX_MC_LOSS=TRADING_CONFIG.maxMonteCarloLossProbability,MIN_SCORE=TRADING_CONFIG.minScore;
 const mean=(a:number[])=>a.length?a.reduce((x,y)=>x+y,0)/a.length:0;
 function summarize(id:string,returns:number[],initial:number):StrategyResult{const wins=returns.filter(x=>x>0),losses=returns.filter(x=>x<0),gp=wins.reduce((a,b)=>a+b,0),gl=Math.abs(losses.reduce((a,b)=>a+b,0)),pf=gl?gp/gl:0;let equity=initial,peak=initial,dd=0;for(const r of returns){equity*=1+r/100;peak=Math.max(peak,equity);dd=Math.max(dd,(peak-equity)/peak*100);}const ret=(equity/initial-1)*100,wr=returns.length?wins.length/returns.length*100:0,avg=mean(returns),sh=returns.length?Math.sqrt(returns.length)*avg/(Math.sqrt(mean(returns.map(x=>(x-avg)**2)))||1):0;return{id,name:'Production Regime Breakout v28',trades:returns.length,wins:wins.length,losses:losses.length,winRate:wr,profitFactor:pf,netPnl:equity-initial,returnPct:ret,maxDrawdownPct:dd,avgTrade:avg,score:(ret+Math.min(pf,5)*2.5+sh*2+wr/25-dd*.8)*Math.min(1,returns.length/30),tradeReturnsPct:returns,sharpe:sh,sortino:sh,calmar:dd?ret/dd:0,expectancy:avg,turnoverPct:returns.reduce((a,b)=>a+Math.abs(b),0)};}
 function summarizeFamily(returns:number[]):FamilyPerformance{const wins=returns.filter(x=>x>0),losses=returns.filter(x=>x<0),gp=wins.reduce((a,b)=>a+b,0),gl=Math.abs(losses.reduce((a,b)=>a+b,0)),pf=gl?gp/gl:(gp>0?Infinity:0);return{trades:returns.length,wins:wins.length,winRate:returns.length?wins.length/returns.length*100:0,profitFactor:Number.isFinite(pf)?pf:0,returnPct:returns.reduce((a,b)=>a+b,0),avgTrade:mean(returns)};}
@@ -22,9 +25,9 @@ function simulate(c:Candle[],cfg:BacktestConfig,start:number,end:number,funnel?:
   if(!open&&!closed&&i<end-1){
    const signal=evaluateProductionStrategy(hist,{minScore:MIN_SCORE,minRiskReward:TRADING_CONFIG.researchMinRiskReward,maxRiskReward:TRADING_CONFIG.researchMaxRiskReward,lookback:LOOKBACK,feeBps:cfg.feeBps,slippageBps:cfg.slippageBps,maxStructuralRiskAtr:TRADING_CONFIG.maxStructuralRiskAtr,swingLookback:TRADING_CONFIG.swingLookback,funnel});
    if(signal.action!=='WAIT'){
-    const side=signal.action==='LONG'?1:-1,entry=signal.entry*(1+side*slip),signalRisk=Math.abs(signal.entry-signal.stopLoss),rr=signal.riskReward;
-    const riskBudget=Math.max(equity,0)*cfg.riskPerTradePct/100,maxNotional=Math.max(equity,0)*cfg.maxPositionPct/100*Math.max(1,cfg.leverage),q=Math.min(riskBudget/Math.max(signalRisk,entry*.0008),maxNotional/entry);
-    if(q>0&&Number.isFinite(signalRisk)&&signalRisk>0&&Number.isFinite(rr)&&rr>0)open={side,entry,stop:entry-side*signalRisk,target:entry+side*signalRisk*rr,qty:q,bars:0,family:signal.family};
+    const side=signal.action==='LONG'?1:-1,entry=signal.entry*(1+side*slip),risk=Math.abs(entry-signal.stopLoss),rr=signal.riskReward;
+    const riskBudget=Math.max(equity,0)*cfg.riskPerTradePct/100,maxNotional=Math.max(equity,0)*cfg.maxPositionPct/100*Math.max(1,cfg.leverage),q=Math.min(riskBudget/Math.max(risk,entry*.0008),maxNotional/entry);
+    if(q>0&&Number.isFinite(risk)&&risk>0&&Number.isFinite(rr)&&rr>0)open={side,entry,stop:entry-side*risk,target:entry+side*risk*rr,qty:q,bars:0,family:signal.family};
    }
   }
  }
