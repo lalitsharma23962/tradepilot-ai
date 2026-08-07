@@ -33,17 +33,17 @@ export function evaluateProductionStrategy(input:number[]|MarketBar[],config:Par
  const hLong=hourly.length>=50?h20>h40&&h40>h50&&hS12>0&&hS24>=-0.000001&&hEff24>=.08:false,hShort=hourly.length>=50?h20<h40&&h40<h50&&hS12<0&&hS24<=0.000001&&hEff24>=.08:false;
  const lastBar=bars.at(-1)!,prevBar=bars.at(-2)!,lastRange=Math.max(lastBar.high-lastBar.low,entry*1e-8),bodyRatio=Math.abs(lastBar.close-lastBar.open)/lastRange,closeLocation=(lastBar.close-lastBar.low)/lastRange;
  const barLong=lastBar.close>lastBar.open&&lastBar.close>=prevBar.close&&bodyRatio>=.22&&closeLocation>=.55,barShort=lastBar.close<lastBar.open&&lastBar.close<=prevBar.close&&bodyRatio>=.22&&closeLocation<=.45;
- // Pullback/reclaim and continuation setups already have multi-horizon momentum,
- // EMA structure and completed-hour confirmation. Requiring a particular candle
- // body shape on top of those conditions starved the validator. Keep the candle
- // confirmation for fresh breakouts/compression, but let established trend
- // reclaims use the actual close-vs-EMA structure as their trigger.
- const pullbackLong=up&&hLong&&entry>e20&&p.slice(-8,-1).some(v=>v<=e20+a*.55)&&s12>0&&entry>=prevBar.close,pullbackShort=down&&hShort&&entry<e20&&p.slice(-8,-1).some(v=>v>=e20-a*.55)&&s12<0&&entry<=prevBar.close;
+ const priorVolumes=bars.slice(-21,-1).map(b=>b.volume).filter(v=>Number.isFinite(v)&&v>0),avgVolume=mean(priorVolumes),volumeRatio=avgVolume>0?lastBar.volume/avgVolume:1;
+ const breakoutVolumeLong=avgVolume<=0||volumeRatio>=.95,breakoutVolumeShort=avgVolume<=0||volumeRatio>=.95;
+ const recentPullbackLong=bars.slice(-8,-1).some(b=>b.close<=e20*1.0015&&b.low<=e20+a*.20),recentPullbackShort=bars.slice(-8,-1).some(b=>b.close>=e20*.9985&&b.high>=e20-a*.20);
+ const reclaimLong=entry>e20&&entry>=prevBar.close&&barLong&&bodyRatio>=.25&&closeLocation>=.60,reclaimShort=entry<e20&&entry<=prevBar.close&&barShort&&bodyRatio>=.25&&closeLocation<=.40;
+ // A retest is a real reclaim, not merely any recent close inside a broad ATR band.
+ // This removes the previous low-quality condition that dominated the sample.
+ const pullbackLong=up&&hLong&&recentPullbackLong&&reclaimLong&&s12>0&&volumeRatio>=.85,pullbackShort=down&&hShort&&recentPullbackShort&&reclaimShort&&s12<0&&volumeRatio>=.85;
  const breakoutLong=up&&hLong&&entry>rangeHigh+a*.015&&prevBar.close<=rangeHigh+a*.005&&s12>0&&barLong,breakoutShort=down&&hShort&&entry<rangeLow-a*.015&&prevBar.close>=rangeLow-a*.005&&s12<0&&barShort;
  const continuationLong=up&&hLong&&e9>e20&&s24>0&&eff24>=.14&&eff48>=.08&&longConsistency>=.44&&entry>=e20&&Math.abs(entry-e20)<=a*1.75&&entry>=prevBar.close,continuationShort=down&&hShort&&e9<e20&&s24<0&&eff24>=.14&&eff48>=.08&&shortConsistency>=.44&&entry<=e20&&Math.abs(entry-e20)<=a*1.75&&entry<=prevBar.close;
  const prevBars=bars.slice(0,-3),prevFast=trueAtr(prevBars,12),prevSlow=trueAtr(prevBars,48),prevExpansion=prevSlow>0?prevFast/prevSlow:1,compression=prevExpansion<.95,expanding=expansion>Math.max(.95,prevExpansion*1.03)&&expansion>prevExpansion+.02;
  const compressionLong=up&&hLong&&compression&&expanding&&s12>0&&entry>e20&&barLong,compressionShort=down&&hShort&&compression&&expanding&&s12<0&&entry<e20&&barShort;
- const priorVolumes=bars.slice(-21,-1).map(b=>b.volume).filter(v=>Number.isFinite(v)&&v>0),avgVolume=mean(priorVolumes),volumeRatio=avgVolume>0?lastBar.volume/avgVolume:1,breakoutVolumeLong=avgVolume<=0||volumeRatio>=.95,breakoutVolumeShort=avgVolume<=0||volumeRatio>=.95;
  const costAware=vol>=Math.max(.00025,cost*.45)&&vol<=.05,notExtended=Math.abs(entry-e20)<=a*2.5;
  const familyLong=(breakoutLong&&breakoutVolumeLong)||pullbackLong||continuationLong||compressionLong,familyShort=(breakoutShort&&breakoutVolumeShort)||pullbackShort||continuationShort||compressionShort,triggerLong=breakoutLong||pullbackLong||continuationLong||compressionLong,triggerShort=breakoutShort||pullbackShort||continuationShort||compressionShort;
  const longScore=(up?20:0)+(hLong?15:0)+(e9>e20?7:0)+(momentumLong?20:0)+(triggerLong?15:0)+(pullbackLong?4:0)+(breakoutLong?4:0)+(continuationLong?4:0)+(compressionLong?4:0)+(rrsi>=45&&rrsi<=75?7:0)+(costAware?4:0)+(notExtended?3:0),shortScore=(down?20:0)+(hShort?15:0)+(e9<e20?7:0)+(momentumShort?20:0)+(triggerShort?15:0)+(pullbackShort?4:0)+(breakoutShort?4:0)+(continuationShort?4:0)+(compressionShort?4:0)+(rrsi>=25&&rrsi<=55?7:0)+(costAware?4:0)+(notExtended?3:0);
@@ -55,7 +55,7 @@ export function evaluateProductionStrategy(input:number[]|MarketBar[],config:Par
  if(riskFloor>cap){if(cfg.funnel)cfg.funnel.rejectedRiskFloor++;return wait(entry,[`Minimum cost/ATR risk ${(riskFloor/a).toFixed(2)} ATR exceeds ${(cfg.maxStructuralRiskAtr??1.35).toFixed(2)} ATR ceiling`],score);}
  const risk=Math.max(rawRisk,riskFloor),minRR=cfg.minRiskReward??1.5,maxRR=cfg.maxRiskReward??3,ultra=TRADING_CONFIG.ultraScore,rrOverride=cfg.riskReward,rr=rrOverride??clamp(minRR+(maxRR-minRR)*clamp((score-(cfg.minScore??TRADING_CONFIG.minScore))/Math.max(1,ultra-(cfg.minScore??TRADING_CONFIG.minScore)),0,1),minRR,maxRR),targetDistance=risk*rr,pathCapacity=a*(8+28*eff24+8*sep+8*Math.max(0,expansion-1)+5*eff48);
  if(targetDistance>pathCapacity){if(cfg.funnel)cfg.funnel.rejectedPathCapacity++;return wait(entry,[`${rr.toFixed(1)}R target exceeds measured path capacity`],score);}
- const stopLoss=side==='LONG'?entry-risk:entry+risk,takeProfit=side==='LONG'?entry+targetDistance:entry-targetDistance,family=breakoutLong||breakoutShort?'breakout':pullbackLong||pullbackShort?'retest':compressionLong||compressionShort?'compression':'trend',familyLabel=family==='breakout'?'Fresh breakout':family==='retest'?'EMA20 pullback/reclaim':family==='compression'?'Compression expansion':'Trend continuation';
+ const stopLoss=side==='LONG'?entry-risk:entry+risk,takeProfit=side==='LONG'?entry+targetDistance:entry-targetDistance,family=breakoutLong||breakoutShort?'breakout':continuationLong||continuationShort?'trend':pullbackLong||pullbackShort?'retest':'compression',familyLabel=family==='breakout'?'Fresh breakout':family==='retest'?'EMA20 pullback/reclaim':family==='compression'?'Compression expansion':'Trend continuation';
  if(cfg.funnel)cfg.funnel.tradesOpened++;
  return{action:side,score:Math.round(clamp(score,0,100)),confidence:Math.round(clamp(score,0,100)),strategy:'Production Regime Breakout v28',entry,stopLoss,takeProfit,riskReward:rr,family,reasons:[familyLabel,side==='LONG'?'Bullish local + completed-hour regime':'Bearish local + completed-hour regime','Multi-horizon momentum','Real OHLC ATR structural stop','Cost-aware risk distance',`Target ${rr.toFixed(1)}R`,`Score ${Math.round(score)}/100`]};
 }
