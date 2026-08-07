@@ -57,7 +57,7 @@ function simulate(c:Candle[],id:string,cfg:BacktestConfig,start:number,end:numbe
   if(open){open.bars++;const stopHit=open.side===1?b.low<=open.stop:b.high>=open.stop,targetHit=open.side===1?b.high>=open.target:b.low<=open.target,timeout=open.bars>=cfg.maxBarsInTrade;
    if(stopHit||targetHit||timeout){const raw=stopHit?open.stop:targetHit?open.target:b.close,exit=raw*(1-open.side*slip),gross=open.side*(exit-open.entry)*open.qty,fees=(Math.abs(open.entry*open.qty)+Math.abs(exit*open.qty))*fee,pnl=gross-fees;rs.push(equity?100*pnl/equity:0);equity+=pnl;open=null}
   }
-  if(!open){const side=signal(id,hist,cfg);if(side){const entry=b.open*(1+side*slip),risk=Math.max(a*cfg.stopAtr,entry*roundTrip*1.5),riskBudget=Math.max(equity,0)*cfg.riskPerTradePct/100,maxNotional=Math.max(equity,0)*cfg.maxPositionPct/100*Math.max(1,cfg.leverage),riskQty=riskBudget/risk,q=Math.min(riskQty,maxNotional/entry);if(q>0){const rr=id==='production'?2.5:cfg.rewardRisk;open={side,entry,stop:entry-side*risk,target:entry+side*(risk*rr+entry*roundTrip),qty:q,bars:0}}}}
+  if(!open){const side=signal(id,hist,cfg);if(side){const entry=b.open*(1+side*slip),risk=Math.max(a*cfg.stopAtr,entry*roundTrip*1.5),riskBudget=Math.max(equity,0)*cfg.riskPerTradePct/100,maxNotional=Math.max(equity,0)*cfg.maxPositionPct/100*Math.max(1,cfg.leverage),riskQty=riskBudget/risk,q=Math.min(riskQty,maxNotional/entry);if(q>0){const rr=id==='production'?2.5:(cfg.rewardRisk??2.5);open={side,entry,stop:entry-side*risk,target:entry+side*(risk*rr+entry*roundTrip),qty:q,bars:0}}}}
   peak=Math.max(peak,equity);dd=Math.max(dd,(peak-equity)/peak*100);
  }
  return summarize(id,rs,cfg.initialCapital);
