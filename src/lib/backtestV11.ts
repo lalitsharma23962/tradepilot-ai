@@ -12,22 +12,23 @@ interface FamilyTaggedReturn{pct:number;family:string;}
 function simulate(c:Candle[],cfg:BacktestConfig,start:number,end:number,funnel?:FunnelCounters,familyReturns?:FamilyTaggedReturn[]):StrategyResult{
  let equity=cfg.initialCapital;const returns:number[]=[];let open:null|{side:1|-1;entry:number;stop:number;target:number;qty:number;bars:number;family:string}=null;const fee=cfg.feeBps/10000,slip=cfg.slippageBps/10000;
  const record=(pnl:number,family:string)=>{const pct=equity?100*pnl/equity:0;returns.push(pct);familyReturns?.push({pct,family});equity+=pnl;};
- const settle=(bar:Candle)=>{if(!open)return;const exit=bar.close*(1-open.side*slip),gross=open.side*(exit-open.entry)*open.qty,fees=(Math.abs(open.entry*open.qty)+Math.abs(exit*open.qty))*fee;record(gross-fees,open.family);open=null;};
+ const closeOpen=(bar:Candle)=>{if(!open)return;const exit=bar.close*(1-open.side*slip),gross=open.side*(exit-open.entry)*open.qty,fees=(Math.abs(open.entry*open.qty)+Math.abs(exit*open.qty))*fee;record(gross-fees,open.family);open=null;};
  for(let i=Math.max(start,LOOKBACK);i<end;i++){
   const b=c[i],hist=c.slice(Math.max(0,i-LOOKBACK+1),i+1);let closed=false;
   if(open){open.bars++;const stop=open.side===1?b.low<=open.stop:b.high>=open.stop,tp=open.side===1?b.high>=open.target:b.low<=open.target,timeout=open.bars>=cfg.maxBarsInTrade;if(stop||tp||timeout){const raw=stop?open.stop:tp?open.target:b.close,exit=raw*(1-open.side*slip),gross=open.side*(exit-open.entry)*open.qty,fees=(Math.abs(open.entry*open.qty)+Math.abs(exit*open.qty))*fee;record(gross-fees,open.family);open=null;closed=true;}}
-  // Do not open a new position on the final bar of a fold. There is no future
-  // bar on which that position can actually be tested; silently dropping it at
-  // the fold boundary used to bias trade counts and fold P&L.
+  // Never create a new position on the final bar of a fold. There is no future
+  // candle on which to evaluate that signal, and immediately closing it at the
+  // same bar would manufacture a fee-only trade and contaminate fold statistics.
   if(!open&&!closed&&i<end-1){
    const signal=evaluateProductionStrategy(hist,{minScore:MIN_SCORE,minRiskReward:TRADING_CONFIG.researchMinRiskReward,maxRiskReward:TRADING_CONFIG.researchMaxRiskReward,lookback:LOOKBACK,feeBps:cfg.feeBps,slippageBps:cfg.slippageBps,maxStructuralRiskAtr:TRADING_CONFIG.maxStructuralRiskAtr,swingLookback:TRADING_CONFIG.swingLookback,funnel});
-   if(signal.action!=='WAIT'){const side=signal.action==='LONG'?1:-1,entry=b.close*(1+side*slip),risk=Math.abs(entry-signal.stopLoss),rr=signal.riskReward,riskBudget=Math.max(equity,0)*cfg.riskPerTradePct/100,maxNotional=Math.max(equity,0)*cfg.maxPositionPct/100*Math.max(1,cfg.leverage),q=Math.min(riskBudget/Math.max(risk,entry*.0008),maxNotional/entry);if(q>0&&Number.isFinite(risk)&&risk>0&&Number.isFinite(rr)&&rr>0)open={side,entry,stop:entry-side*risk,target:entry+side*risk*rr,qty:q,bars:0,family:signal.family};}
+   if(signal.action!=='WAIT'){
+    const side=signal.action==='LONG'?1:-1,entry=signal.entry*(1+side*slip),signalRisk=Math.abs(signal.entry-signal.stopLoss),rr=signal.riskReward;
+    const riskBudget=Math.max(equity,0)*cfg.riskPerTradePct/100,maxNotional=Math.max(equity,0)*cfg.maxPositionPct/100*Math.max(1,cfg.leverage),q=Math.min(riskBudget/Math.max(signalRisk,entry*.0008),maxNotional/entry);
+    if(q>0&&Number.isFinite(signalRisk)&&signalRisk>0&&Number.isFinite(rr)&&rr>0)open={side,entry,stop:entry-side*signalRisk,target:entry+side*signalRisk*rr,qty:q,bars:0,family:signal.family};
+   }
   }
  }
- // Every position counted in a fold must be settled exactly once at the fold
- // boundary. This keeps folds independent without leaking an open trade into
- // the next fold and without creating an artificial same-bar trade.
- if(open&&end>Math.max(start,LOOKBACK))settle(c[end-1]);
+ if(open&&end>Math.max(start,LOOKBACK))closeOpen(c[end-1]);
  return summarize('production',returns,cfg.initialCapital);
 }
 function foldPass(f:StrategyResult){return f.trades>=MIN_FOLD_TRADES&&f.returnPct>0&&f.profitFactor>=MIN_PF&&f.maxDrawdownPct<=MAX_DD;}
