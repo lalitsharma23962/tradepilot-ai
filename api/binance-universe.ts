@@ -27,7 +27,7 @@ export default async function handler(req:any,res:any){
         const endTime=Number.isFinite(endRaw)&&endRaw>0?endRaw:undefined;
         return respond(res,{ok:true,klines:await fetchKlines(symbol,interval,limit,startTime,endTime)});
       }
-      const total=Math.min(40000,Math.max(20000,Number(req.query?.total??20000)));
+      const total=Math.min(60000,Math.max(20000,Number(req.query?.total??20000)));
       const ms=intervalMs(interval);
       const rows:unknown[][]=[];
       // We need one extra raw candle because the current open candle is deliberately
