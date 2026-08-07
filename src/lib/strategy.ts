@@ -26,7 +26,7 @@ export function evaluateProductionStrategy(input:number[]|MarketBar[],config:Par
  const momentumLong=s12>Math.max(.00001,vol*.006)&&s24>0&&s48>0,momentumShort=s12<-Math.max(.00001,vol*.006)&&s24<0&&s48<0;
  const longConsistency=consistency(p.slice(-15),1),shortConsistency=consistency(p.slice(-15),-1),hourly=completedHourly(bars),hp=hourly.map(b=>b.close),h20=ema(hp,20),h40=ema(hp,40),h50=ema(hp,50);
  const hS12=hp.length>=12?slope(hp.slice(-12))/Math.max(entry,1):0,hS24=hp.length>=24?slope(hp.slice(-24))/Math.max(entry,1):0,hEff24=efficiency(hp.slice(-24));
- const hLong=hourly.length>=50?h20>h40&&h40>h50&&hS12>0&&hS24>=0&&hEff24>=.12:true,hShort=hourly.length>=50?h20<h40&&h40<h50&&hS12<0&&hS24<=0&&hEff24>=.12:true;
+ const hLong=hourly.length>=50?h20>h40&&h40>h50&&hS12>0&&hS24>=0&&hEff24>=.12:false,hShort=hourly.length>=50?h20<h40&&h40<h50&&hS12<0&&hS24<=0&&hEff24>=.12:false;
  const momentumLongAligned=momentumLong&&hLong,momentumShortAligned=momentumShort&&hShort;
  const trendLong=up&&hLong&&eff24>=.20&&eff48>=.15&&longConsistency>=.50&&sep>=.04,trendShort=down&&hShort&&eff24>=.20&&eff48>=.15&&shortConsistency>=.50&&sep>=.04;
  const breakoutLong=entry>rangeHigh+a*.02&&momentumLongAligned,breakoutShort=entry<rangeLow-a*.02&&momentumShortAligned;
