@@ -33,9 +33,14 @@ export function evaluateProductionStrategy(input:number[]|MarketBar[],config:Par
  const hLong=hourly.length>=50?h20>h40&&h40>h50&&hS12>0&&hS24>=-0.000001&&hEff24>=.08:false,hShort=hourly.length>=50?h20<h40&&h40<h50&&hS12<0&&hS24<=0.000001&&hEff24>=.08:false;
  const lastBar=bars.at(-1)!,prevBar=bars.at(-2)!,lastRange=Math.max(lastBar.high-lastBar.low,entry*1e-8),bodyRatio=Math.abs(lastBar.close-lastBar.open)/lastRange,closeLocation=(lastBar.close-lastBar.low)/lastRange;
  const barLong=lastBar.close>lastBar.open&&lastBar.close>=prevBar.close&&bodyRatio>=.22&&closeLocation>=.55,barShort=lastBar.close<lastBar.open&&lastBar.close<=prevBar.close&&bodyRatio>=.22&&closeLocation<=.45;
- const pullbackLong=up&&hLong&&entry>e20&&p.slice(-8,-1).some(v=>v<=e20+a*.55)&&s12>0&&barLong,pullbackShort=down&&hShort&&entry<e20&&p.slice(-8,-1).some(v=>v>=e20-a*.55)&&s12<0&&barShort;
+ // Pullback/reclaim and continuation setups already have multi-horizon momentum,
+ // EMA structure and completed-hour confirmation. Requiring a particular candle
+ // body shape on top of those conditions starved the validator. Keep the candle
+ // confirmation for fresh breakouts/compression, but let established trend
+ // reclaims use the actual close-vs-EMA structure as their trigger.
+ const pullbackLong=up&&hLong&&entry>e20&&p.slice(-8,-1).some(v=>v<=e20+a*.55)&&s12>0&&entry>=prevBar.close,pullbackShort=down&&hShort&&entry<e20&&p.slice(-8,-1).some(v=>v>=e20-a*.55)&&s12<0&&entry<=prevBar.close;
  const breakoutLong=up&&hLong&&entry>rangeHigh+a*.015&&prevBar.close<=rangeHigh+a*.005&&s12>0&&barLong,breakoutShort=down&&hShort&&entry<rangeLow-a*.015&&prevBar.close>=rangeLow-a*.005&&s12<0&&barShort;
- const continuationLong=up&&hLong&&e9>e20&&s24>0&&eff24>=.14&&eff48>=.08&&longConsistency>=.44&&entry>=e20&&Math.abs(entry-e20)<=a*1.75&&barLong,continuationShort=down&&hShort&&e9<e20&&s24<0&&eff24>=.14&&eff48>=.08&&shortConsistency>=.44&&entry<=e20&&Math.abs(entry-e20)<=a*1.75&&barShort;
+ const continuationLong=up&&hLong&&e9>e20&&s24>0&&eff24>=.14&&eff48>=.08&&longConsistency>=.44&&entry>=e20&&Math.abs(entry-e20)<=a*1.75&&entry>=prevBar.close,continuationShort=down&&hShort&&e9<e20&&s24<0&&eff24>=.14&&eff48>=.08&&shortConsistency>=.44&&entry<=e20&&Math.abs(entry-e20)<=a*1.75&&entry<=prevBar.close;
  const prevBars=bars.slice(0,-3),prevFast=trueAtr(prevBars,12),prevSlow=trueAtr(prevBars,48),prevExpansion=prevSlow>0?prevFast/prevSlow:1,compression=prevExpansion<.95,expanding=expansion>Math.max(.95,prevExpansion*1.03)&&expansion>prevExpansion+.02;
  const compressionLong=up&&hLong&&compression&&expanding&&s12>0&&entry>e20&&barLong,compressionShort=down&&hShort&&compression&&expanding&&s12<0&&entry<e20&&barShort;
  const priorVolumes=bars.slice(-21,-1).map(b=>b.volume).filter(v=>Number.isFinite(v)&&v>0),avgVolume=mean(priorVolumes),volumeRatio=avgVolume>0?lastBar.volume/avgVolume:1,breakoutVolumeLong=avgVolume<=0||volumeRatio>=.95,breakoutVolumeShort=avgVolume<=0||volumeRatio>=.95;
