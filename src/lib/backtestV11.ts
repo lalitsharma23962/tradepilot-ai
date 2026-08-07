@@ -1,4 +1,5 @@
 import { fetchHistoricalCandles, type Candle, type BacktestConfig, type StrategyResult, type ValidationReport, type ValidationGate, type FoldDiagnostic } from './backtestV6';
+export type { BacktestConfig, StrategyResult, ValidationReport, ValidationGate, FoldDiagnostic } from './backtestV6';
 import { evaluateProductionStrategy } from './strategy';
 import { TRADING_CONFIG } from './tradingConfig';
 
