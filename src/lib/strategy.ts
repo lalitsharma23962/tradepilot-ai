@@ -37,18 +37,32 @@ export function evaluateProductionStrategy(input:number[]|MarketBar[],config:Par
  const breakoutVolumeLong=avgVolume<=0||volumeRatio>=.95,breakoutVolumeShort=avgVolume<=0||volumeRatio>=.95;
  const recentPullbackLong=bars.slice(-8,-1).some(b=>b.close<=e20*1.0015&&b.low<=e20+a*.20),recentPullbackShort=bars.slice(-8,-1).some(b=>b.close>=e20*.9985&&b.high>=e20-a*.20);
  const reclaimLong=entry>e20&&entry>=prevBar.close&&barLong&&bodyRatio>=.25&&closeLocation>=.60,reclaimShort=entry<e20&&entry<=prevBar.close&&barShort&&bodyRatio>=.25&&closeLocation<=.40;
- // A retest is a real reclaim, not merely any recent close inside a broad ATR band.
- // This removes the previous low-quality condition that dominated the sample.
- const pullbackLong=up&&hLong&&recentPullbackLong&&reclaimLong&&s12>0&&volumeRatio>=.85,pullbackShort=down&&hShort&&recentPullbackShort&&reclaimShort&&s12<0&&volumeRatio>=.85;
- const breakoutLong=up&&hLong&&entry>rangeHigh+a*.015&&prevBar.close<=rangeHigh+a*.005&&s12>0&&barLong,breakoutShort=down&&hShort&&entry<rangeLow-a*.015&&prevBar.close>=rangeLow-a*.005&&s12<0&&barShort;
- const continuationLong=up&&hLong&&e9>e20&&s24>0&&eff24>=.14&&eff48>=.08&&longConsistency>=.44&&entry>=e20&&Math.abs(entry-e20)<=a*1.75&&entry>=prevBar.close,continuationShort=down&&hShort&&e9<e20&&s24<0&&eff24>=.14&&eff48>=.08&&shortConsistency>=.44&&entry<=e20&&Math.abs(entry-e20)<=a*1.75&&entry<=prevBar.close;
+ const pullbackLongLocal=up&&recentPullbackLong&&reclaimLong&&s12>0&&volumeRatio>=.85,pullbackShortLocal=down&&recentPullbackShort&&reclaimShort&&s12<0&&volumeRatio>=.85;
+ const breakoutLongLocal=up&&entry>rangeHigh+a*.015&&prevBar.close<=rangeHigh+a*.005&&s12>0&&barLong,breakoutShortLocal=down&&entry<rangeLow-a*.015&&prevBar.close>=rangeLow-a*.005&&s12<0&&barShort;
+ const continuationLongLocal=up&&e9>e20&&s24>0&&eff24>=.14&&eff48>=.08&&longConsistency>=.44&&entry>=e20&&Math.abs(entry-e20)<=a*1.75&&entry>=prevBar.close,continuationShortLocal=down&&e9<e20&&s24<0&&eff24>=.14&&eff48>=.08&&shortConsistency>=.44&&entry<=e20&&Math.abs(entry-e20)<=a*1.75&&entry<=prevBar.close;
  const prevBars=bars.slice(0,-3),prevFast=trueAtr(prevBars,12),prevSlow=trueAtr(prevBars,48),prevExpansion=prevSlow>0?prevFast/prevSlow:1,compression=prevExpansion<.95,expanding=expansion>Math.max(.95,prevExpansion*1.03)&&expansion>prevExpansion+.02;
- const compressionLong=up&&hLong&&compression&&expanding&&s12>0&&entry>e20&&barLong,compressionShort=down&&hShort&&compression&&expanding&&s12<0&&entry<e20&&barShort;
- const costAware=vol>=Math.max(.00025,cost*.45)&&vol<=.05,notExtended=Math.abs(entry-e20)<=a*2.5;
- const familyLong=(breakoutLong&&breakoutVolumeLong)||pullbackLong||continuationLong||compressionLong,familyShort=(breakoutShort&&breakoutVolumeShort)||pullbackShort||continuationShort||compressionShort,triggerLong=breakoutLong||pullbackLong||continuationLong||compressionLong,triggerShort=breakoutShort||pullbackShort||continuationShort||compressionShort;
+ const compressionLongLocal=up&&compression&&expanding&&s12>0&&entry>e20&&barLong,compressionShortLocal=down&&compression&&expanding&&s12<0&&entry<e20&&barShort;
+ const localLong=breakoutLongLocal||pullbackLongLocal||continuationLongLocal||compressionLongLocal,localShort=breakoutShortLocal||pullbackShortLocal||continuationShortLocal||compressionShortLocal;
+ const breakoutLong=breakoutLongLocal&&breakoutVolumeLong,breakoutShort=breakoutShortLocal&&breakoutVolumeShort;
+ const pullbackLong=pullbackLongLocal&&hLong,pullbackShort=pullbackShortLocal&&hShort;
+ const continuationLong=continuationLongLocal&&hLong,continuationShort=continuationShortLocal&&hShort;
+ const compressionLong=compressionLongLocal&&hLong,compressionShort=compressionShortLocal&&hShort;
+ const familyLong=breakoutLong||pullbackLong||continuationLong||compressionLong,familyShort=breakoutShort||pullbackShort||continuationShort||compressionShort,triggerLong=breakoutLong||pullbackLong||continuationLong||compressionLong,triggerShort=breakoutShort||pullbackShort||continuationShort||compressionShort;
  const longScore=(up?20:0)+(hLong?15:0)+(e9>e20?7:0)+(momentumLong?20:0)+(triggerLong?15:0)+(pullbackLong?4:0)+(breakoutLong?4:0)+(continuationLong?4:0)+(compressionLong?4:0)+(rrsi>=45&&rrsi<=75?7:0)+(costAware?4:0)+(notExtended?3:0),shortScore=(down?20:0)+(hShort?15:0)+(e9<e20?7:0)+(momentumShort?20:0)+(triggerShort?15:0)+(pullbackShort?4:0)+(breakoutShort?4:0)+(continuationShort?4:0)+(compressionShort?4:0)+(rrsi>=25&&rrsi<=55?7:0)+(costAware?4:0)+(notExtended?3:0);
+ if(cfg.funnel){
+  if(continuationLongLocal||continuationShortLocal)cfg.funnel.familyCandidatesTrend++;
+  if((breakoutLongLocal&&breakoutVolumeLong)||(breakoutShortLocal&&breakoutVolumeShort))cfg.funnel.familyCandidatesBreakout++;
+  if(pullbackLongLocal||pullbackShortLocal)cfg.funnel.familyCandidatesRetest++;
+  if(compressionLongLocal||compressionShortLocal)cfg.funnel.familyCandidatesCompression++;
+  const anyLocalPattern=localLong||localShort,anyHtf=hLong||hShort;
+  if(!familyLong&&!familyShort){
+   if(!anyLocalPattern)cfg.funnel.noLocalPattern++;
+   else if(!(momentumLong||momentumShort))cfg.funnel.rejectedMomentum++;
+   else if(!anyHtf)cfg.funnel.rejectedHtf++;
+   else cfg.funnel.rejectedScore++;
+  }
+ }
  const minScore=Math.max(80,cfg.minScore),side:Side|null=familyLong&&longScore>=minScore&&longScore>=shortScore?'LONG':familyShort&&shortScore>=minScore?'SHORT':null,score=side==='LONG'?longScore:side==='SHORT'?shortScore:Math.max(longScore,shortScore);
- if(cfg.funnel){const patTrendLong=continuationLong,patTrendShort=continuationShort,patBreakoutLong=breakoutLong&&breakoutVolumeLong,patBreakoutShort=breakoutShort&&breakoutVolumeShort,patRetestLong=pullbackLong,patRetestShort=pullbackShort,patCompressionLong=compressionLong,patCompressionShort=compressionShort;if(patTrendLong||patTrendShort)cfg.funnel.familyCandidatesTrend++;if(patBreakoutLong||patBreakoutShort)cfg.funnel.familyCandidatesBreakout++;if(patRetestLong||patRetestShort)cfg.funnel.familyCandidatesRetest++;if(patCompressionLong||patCompressionShort)cfg.funnel.familyCandidatesCompression++;const anyPattern=patTrendLong||patTrendShort||patBreakoutLong||patBreakoutShort||patRetestLong||patRetestShort||patCompressionLong||patCompressionShort;if(!side){if(!anyPattern)cfg.funnel.noLocalPattern++;else if(!(momentumLong||momentumShort))cfg.funnel.rejectedMomentum++;else if(!(hLong||hShort))cfg.funnel.rejectedHtf++;else cfg.funnel.rejectedScore++;}}
  if(!side)return wait(entry,['No setup family passed the local trigger, completed-hour regime, momentum and cost gate'],score);
  const look=cfg.swingLookback??5,recent=bars.slice(-look),swingLow=Math.min(...recent.map(b=>b.low)),swingHigh=Math.max(...recent.map(b=>b.high)),floor=Math.max(entry*.0008,a*.55),rawRisk=side==='LONG'?Math.max(entry-swingLow,floor):Math.max(swingHigh-entry,floor),cap=a*(cfg.maxStructuralRiskAtr??1.35),riskFloor=Math.max(a*(cfg.atrStopMultiple??1.5)*.65,entry*cost*1.75,entry*.0008,a*.55);
  if(rawRisk>cap){if(cfg.funnel)cfg.funnel.rejectedStructuralStop++;return wait(entry,[`Structural stop ${(rawRisk/a).toFixed(2)} ATR exceeds ${(cfg.maxStructuralRiskAtr??1.35).toFixed(2)} ATR ceiling`],score);}
