@@ -14,7 +14,18 @@ function simulate(c:Candle[],cfg:BacktestConfig,start:number,end:number,funnel?:
  const closeOpen=(bar:Candle)=>{if(!open)return;const exit=bar.close*(1-open.side*slip),gross=open.side*(exit-open.entry)*open.qty,fees=(Math.abs(open.entry*open.qty)+Math.abs(exit*open.qty))*fee;record(gross-fees,open.family);open=null;};
  for(let i=Math.max(start,LOOKBACK);i<end;i++){const b=c[i],hist=c.slice(Math.max(0,i-LOOKBACK+1),i+1);let closed=false;
   if(open){open.bars++;const stop=open.side===1?b.low<=open.stop:b.high>=open.stop,tp=open.side===1?b.high>=open.target:b.low<=open.target,timeout=open.bars>=cfg.maxBarsInTrade;if(stop||tp||timeout){const raw=stop?open.stop:tp?open.target:b.close,exit=raw*(1-open.side*slip),gross=open.side*(exit-open.entry)*open.qty,fees=(Math.abs(open.entry*open.qty)+Math.abs(exit*open.qty))*fee;record(gross-fees,open.family);open=null;closed=true;}}
-  if(!open&&!closed&&i<end-1){const signal=evaluateProductionStrategy(hist,{minScore:MIN_SCORE,minRiskReward:TRADING_CONFIG.researchMinRiskReward,maxRiskReward:TRADING_CONFIG.researchMaxRiskReward,lookback:LOOKBACK,feeBps:cfg.feeBps,slippageBps:cfg.slippageBps,maxStructuralRiskAtr:TRADING_CONFIG.maxStructuralRiskAtr,swingLookback:TRADING_CONFIG.swingLookback,funnel});if(signal.action!=='WAIT'){const side=signal.action==='LONG'?1:-1,entry=signal.entry*(1+side*slip),signalRisk=Math.abs(signal.entry-signal.stopLoss),rr=signal.riskReward;const riskBudget=Math.max(equity,0)*cfg.riskPerTradePct/100,maxNotional=Math.max(equity,0)*cfg.maxPositionPct/100*Math.max(1,cfg.leverage),q=Math.min(riskBudget/Math.max(signalRisk,entry*.0008),maxNotional/entry);if(q>0&&Number.isFinite(signalRisk)&&signalRisk>0&&Number.isFinite(rr)&&rr>0)open={side,entry,stop:entry-side*signalRisk,target:entry+side*signalRisk*rr,qty:q,bars:0,family:signal.family};}}
+  if(!open&&!closed&&i<end-1){const signal=evaluateProductionStrategy(hist,{minScore:MIN_SCORE,minRiskReward:TRADING_CONFIG.researchMinRiskReward,maxRiskReward:TRADING_CONFIG.researchMaxRiskReward,lookback:LOOKBACK,feeBps:cfg.feeBps,slippageBps:cfg.slippageBps,maxStructuralRiskAtr:TRADING_CONFIG.maxStructuralRiskAtr,swingLookback:TRADING_CONFIG.swingLookback,funnel});if(signal.action!=='WAIT'){
+    const side=signal.action==='LONG'?1:-1;
+    const entry=signal.entry*(1+side*slip);
+    // Keep the exact strategy stop price. The live paper engine computes the
+    // actual post-slippage risk from entry -> signal.stopLoss and then rebuilds
+    // the stop, which resolves back to signal.stopLoss. The old validator instead
+    // shifted the stop by the original signal risk, making research and paper
+    // execution materially different whenever slippage was non-zero.
+    const risk=Math.abs(entry-signal.stopLoss),rr=signal.riskReward;
+    const riskBudget=Math.max(equity,0)*cfg.riskPerTradePct/100,maxNotional=Math.max(equity,0)*cfg.maxPositionPct/100*Math.max(1,cfg.leverage),q=Math.min(riskBudget/Math.max(risk,entry*.0008),maxNotional/entry);
+    if(q>0&&Number.isFinite(risk)&&risk>0&&Number.isFinite(rr)&&rr>0)open={side,entry,stop:signal.stopLoss,target:entry+side*risk*rr,qty:q,bars:0,family:signal.family};
+  }}
  }
  if(open&&end>Math.max(start,LOOKBACK))closeOpen(c[end-1]);return summarize('production',returns,cfg.initialCapital);
 }
