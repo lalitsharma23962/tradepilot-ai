@@ -42,6 +42,7 @@ export function evaluateProductionStrategy(input:number[]|MarketBar[],config:Par
  const continuationLongLocal=up&&e9>e20&&s24>0&&eff24>=.14&&eff48>=.08&&longConsistency>=.44&&entry>=e20&&Math.abs(entry-e20)<=a*1.75&&entry>=prevBar.close,continuationShortLocal=down&&e9<e20&&s24<0&&eff24>=.14&&eff48>=.08&&shortConsistency>=.44&&entry<=e20&&Math.abs(entry-e20)<=a*1.75&&entry<=prevBar.close;
  const prevBars=bars.slice(0,-3),prevFast=trueAtr(prevBars,12),prevSlow=trueAtr(prevBars,48),prevExpansion=prevSlow>0?prevFast/prevSlow:1,compression=prevExpansion<.95,expanding=expansion>Math.max(.95,prevExpansion*1.03)&&expansion>prevExpansion+.02;
  const compressionLongLocal=up&&compression&&expanding&&s12>0&&entry>e20&&barLong,compressionShortLocal=down&&compression&&expanding&&s12<0&&entry<e20&&barShort;
+ const costAware=vol>=Math.max(.00025,cost*.45)&&vol<=.05,notExtended=Math.abs(entry-e20)<=a*2.5;
  const localLong=breakoutLongLocal||pullbackLongLocal||continuationLongLocal||compressionLongLocal,localShort=breakoutShortLocal||pullbackShortLocal||continuationShortLocal||compressionShortLocal;
  const breakoutLong=breakoutLongLocal&&breakoutVolumeLong,breakoutShort=breakoutShortLocal&&breakoutVolumeShort;
  const pullbackLong=pullbackLongLocal&&hLong,pullbackShort=pullbackShortLocal&&hShort;
