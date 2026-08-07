@@ -1,4 +1,4 @@
-// Validation-fix deployment marker: deterministic completed-candle history paging.
+// Validation-fix deployment marker: deterministic completed-candle history paging; 60k ceiling.
 const BINANCE_BASE='https://data-api.binance.vision/api/v3';
 
 function respond(res:any,body:unknown,status=200){res.status(status).setHeader('content-type','application/json').setHeader('cache-control','no-store').send(JSON.stringify(body));}
