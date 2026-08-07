@@ -1,5 +1,5 @@
 export type Candle={openTime:number;open:number;high:number;low:number;close:number;volume:number};
-export type BacktestConfig={initialCapital:number;feeBps:number;slippageBps:number;riskPerTradePct:number;maxPositionPct:number;leverage:number;stopAtr:number;rewardRisk:number;maxBarsInTrade:number};
+export type BacktestConfig={initialCapital:number;feeBps:number;slippageBps:number;riskPerTradePct:number;maxPositionPct:number;leverage:number;stopAtr:number;rewardRisk?:number;maxBarsInTrade:number};
 export type StrategyResult={id:string;name:string;trades:number;wins:number;losses:number;winRate:number;profitFactor:number;netPnl:number;returnPct:number;maxDrawdownPct:number;avgTrade:number;score:number;tradeReturnsPct:number[];sharpe:number;sortino:number;calmar:number;expectancy:number;turnoverPct:number};
 export type FoldDiagnostic={fold:number;startBar:number;endBar:number;trades:number;winRate:number;profitFactor:number;returnPct:number;maxDrawdownPct:number;passesTrades:boolean;passesReturn:boolean;passesProfitFactor:boolean;passesDrawdown:boolean;passed:boolean};
 export type ValidationGate={status:'VALIDATED'|'REJECTED';reasons:string[];minimumTestTrades:number;minimumProfitFactor:number;minimumTestReturnPct:number;maximumTestDrawdownPct:number;maximumMonteCarloLossProbability:number};
