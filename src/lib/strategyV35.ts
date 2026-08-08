@@ -6,12 +6,11 @@ import type { MarketBar } from './marketData';
  * v35: high-conviction entry qualification followed by extreme-R research
  * targets. The validation gate remains unchanged.
  *
- * The important correction here is risk geometry: a 10R/15R target is only
- * useful if the structural stop is tight enough that the target is reachable
- * without turning every signal into a multi-ATR gamble. v32's generic risk
- * floor was designed for 1.5R-3R production targets, so v35 uses a tighter,
- * setup-local structural stop configuration while keeping the v32 entry
- * qualification itself intact.
+ * v35 deliberately does NOT invent a second stop model. Entry qualification,
+ * structural-stop construction, and path-capacity measurement remain the
+ * proven v32 model. The only research-layer change is the target assigned
+ * after an already-qualified entry: 10R by default and 15R for ultra-score
+ * entries. A target is never downgraded when it is infeasible.
  */
 const ENTRY_MIN_R = 1.5;
 const ENTRY_MAX_R = 3;
@@ -20,31 +19,18 @@ const ULTRA_SCORE = 99;
 const RESEARCH_MIN_R = 10;
 const RESEARCH_MAX_R = 15;
 
-// Extreme-R research needs tighter geometry than the ordinary v32 target.
-// These are strategy parameters, not validation-gate changes.
-const EXTREME_ATR_STOP_MULTIPLE = 1.0;
-const EXTREME_MAX_STRUCTURAL_RISK_ATR = 1.05;
-const EXTREME_SWING_LOOKBACK = 3;
-
 export function evaluateProductionStrategy(
   input: number[] | MarketBar[],
   config: Partial<StrategyConfig> = {},
 ): StrategySignal {
+  // Keep v32's original structural-risk geometry intact. v35 is a target
+  // research layer, not a replacement stop model.
   const entrySignal = evaluateEntryStrategy(input, {
     ...config,
     minScore: Math.max(MIN_ENTRY_SCORE, config.minScore ?? MIN_ENTRY_SCORE),
     minRiskReward: ENTRY_MIN_R,
     maxRiskReward: ENTRY_MAX_R,
     riskReward: undefined,
-    atrStopMultiple: EXTREME_ATR_STOP_MULTIPLE,
-    maxStructuralRiskAtr: Math.min(
-      EXTREME_MAX_STRUCTURAL_RISK_ATR,
-      config.maxStructuralRiskAtr ?? EXTREME_MAX_STRUCTURAL_RISK_ATR,
-    ),
-    swingLookback: Math.min(
-      EXTREME_SWING_LOOKBACK,
-      config.swingLookback ?? EXTREME_SWING_LOOKBACK,
-    ),
   });
 
   if (entrySignal.action === 'WAIT') return entrySignal;
@@ -62,9 +48,9 @@ export function evaluateProductionStrategy(
   const targetR = entrySignal.score >= ULTRA_SCORE ? RESEARCH_MAX_R : RESEARCH_MIN_R;
   const targetDistance = risk * targetR;
 
-  // The target must still be supported by the same historical path-capacity
-  // measurement used by the base strategy. This is a feasibility veto, not a
-  // way to downgrade 10R/15R into a smaller reward target.
+  // Hard feasibility veto: a 10R/15R target must be supported by the same
+  // historical path-capacity measurement used by v32. Never substitute a
+  // smaller target just to create a trade.
   if (targetDistance > entrySignal.pathCapacity) {
     return {
       ...entrySignal,
@@ -90,8 +76,7 @@ export function evaluateProductionStrategy(
     riskReward: targetR,
     reasons: [
       ...entrySignal.reasons.filter(reason => !reason.startsWith('Target ')),
-      'A+ entry qualified independently from extreme-RR research target',
-      `Extreme-R target geometry uses ${EXTREME_SWING_LOOKBACK}-bar structural stop`,
+      'A+ entry qualified independently from extreme-R research target',
       `Research target ${targetR}R assigned after entry qualification`,
     ],
   };
