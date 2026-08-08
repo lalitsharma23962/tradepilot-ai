@@ -8,14 +8,14 @@ import type { MarketBar } from './marketData';
  *
  * v35 deliberately does NOT invent a second stop model. Entry qualification,
  * structural-stop construction, and path-capacity measurement remain the
- * proven v32 model. The only research-layer change is the target assigned
- * after an already-qualified entry: 10R by default and 15R for ultra-score
+ * proven v32 model. The research-layer change is the target assigned after
+ * an already-qualified entry: 10R by default and 15R only for ultra-score
  * entries. A target is never downgraded when it is infeasible.
  */
 const ENTRY_MIN_R = 1.5;
 const ENTRY_MAX_R = 3;
 const MIN_ENTRY_SCORE = 94;
-const ULTRA_SCORE = 94;
+const ULTRA_SCORE = 99;
 const RESEARCH_MIN_R = 10;
 const RESEARCH_MAX_R = 15;
 
@@ -45,6 +45,9 @@ export function evaluateProductionStrategy(
     };
   }
 
+  // 10R is the default research target. Only the highest-conviction
+  // score tier earns the 15R target; 15R is never silently substituted
+  // for ordinary A+ entries.
   const targetR = entrySignal.score >= ULTRA_SCORE ? RESEARCH_MAX_R : RESEARCH_MIN_R;
   const targetDistance = risk * targetR;
 
