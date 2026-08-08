@@ -14,8 +14,8 @@ import type { MarketBar } from './marketData';
  */
 const ENTRY_MIN_R = 1.5;
 const ENTRY_MAX_R = 3;
-const MIN_ENTRY_SCORE = 96;
-const ULTRA_SCORE = 99;
+const MIN_ENTRY_SCORE = 94;
+const ULTRA_SCORE = 94;
 const RESEARCH_MIN_R = 10;
 const RESEARCH_MAX_R = 15;
 
