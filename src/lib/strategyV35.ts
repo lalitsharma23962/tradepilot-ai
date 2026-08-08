@@ -3,13 +3,15 @@ export type { StrategyConfig, StrategySignal } from './strategyV32';
 import type { MarketBar } from './marketData';
 
 /**
- * v35 fixes the v34 routing mistake: entry qualification comes from the
- * actual v32 implementation, not the v33 replacement that added extreme-RR
- * feasibility vetoes to entry selection.
+ * v35: high-conviction entry qualification followed by extreme-R research
+ * targets. The validation gate remains unchanged.
  *
- * Entry quality is evaluated at 1.5R-3R. Only after that qualification does
- * v35 assign the research/production target of 10R or 15R. The validation
- * gate itself remains unchanged.
+ * The important correction here is risk geometry: a 10R/15R target is only
+ * useful if the structural stop is tight enough that the target is reachable
+ * without turning every signal into a multi-ATR gamble. v32's generic risk
+ * floor was designed for 1.5R-3R production targets, so v35 uses a tighter,
+ * setup-local structural stop configuration while keeping the v32 entry
+ * qualification itself intact.
  */
 const ENTRY_MIN_R = 1.5;
 const ENTRY_MAX_R = 3;
@@ -17,6 +19,12 @@ const MIN_ENTRY_SCORE = 96;
 const ULTRA_SCORE = 99;
 const RESEARCH_MIN_R = 10;
 const RESEARCH_MAX_R = 15;
+
+// Extreme-R research needs tighter geometry than the ordinary v32 target.
+// These are strategy parameters, not validation-gate changes.
+const EXTREME_ATR_STOP_MULTIPLE = 1.0;
+const EXTREME_MAX_STRUCTURAL_RISK_ATR = 1.05;
+const EXTREME_SWING_LOOKBACK = 3;
 
 export function evaluateProductionStrategy(
   input: number[] | MarketBar[],
@@ -28,6 +36,15 @@ export function evaluateProductionStrategy(
     minRiskReward: ENTRY_MIN_R,
     maxRiskReward: ENTRY_MAX_R,
     riskReward: undefined,
+    atrStopMultiple: EXTREME_ATR_STOP_MULTIPLE,
+    maxStructuralRiskAtr: Math.min(
+      EXTREME_MAX_STRUCTURAL_RISK_ATR,
+      config.maxStructuralRiskAtr ?? EXTREME_MAX_STRUCTURAL_RISK_ATR,
+    ),
+    swingLookback: Math.min(
+      EXTREME_SWING_LOOKBACK,
+      config.swingLookback ?? EXTREME_SWING_LOOKBACK,
+    ),
   });
 
   if (entrySignal.action === 'WAIT') return entrySignal;
@@ -45,17 +62,9 @@ export function evaluateProductionStrategy(
   const targetR = entrySignal.score >= ULTRA_SCORE ? RESEARCH_MAX_R : RESEARCH_MIN_R;
   const targetDistance = risk * targetR;
 
-  // ROOT-CAUSE FIX: v32 already measured how far price realistically travels
-  // from setups like this one (pathCapacity, validated against its OWN
-  // 1.5-3R target). Substituting a 10R/15R target without re-checking it
-  // against that same measurement means every "A+" signal was really just an
-  // ordinary v32 setup with an arbitrary, unvalidated multiplier bolted
-  // on - which is exactly why fold 1 could get lucky (a real outsized move
-  // happened to reach it) while folds 2-3 saw every trade stopped out
-  // before the unvalidated target was ever in reach (PF 0.00, not low-PF).
-  // If the market doesn't support this distance, there is no trade - we do
-  // NOT fall back to a smaller R, since that would just re-attach a
-  // different arbitrary target to the same signal.
+  // The target must still be supported by the same historical path-capacity
+  // measurement used by the base strategy. This is a feasibility veto, not a
+  // way to downgrade 10R/15R into a smaller reward target.
   if (targetDistance > entrySignal.pathCapacity) {
     return {
       ...entrySignal,
@@ -65,7 +74,7 @@ export function evaluateProductionStrategy(
       riskReward: 0,
       reasons: [
         ...entrySignal.reasons,
-        `${targetR}R target (${targetDistance.toFixed(2)}) exceeds measured path capacity (${entrySignal.pathCapacity.toFixed(2)}) - market does not currently support this distance`,
+        `${targetR}R target (${targetDistance.toFixed(2)}) exceeds measured path capacity (${entrySignal.pathCapacity.toFixed(2)})`,
       ],
     };
   }
@@ -82,6 +91,7 @@ export function evaluateProductionStrategy(
     reasons: [
       ...entrySignal.reasons.filter(reason => !reason.startsWith('Target ')),
       'A+ entry qualified independently from extreme-RR research target',
+      `Extreme-R target geometry uses ${EXTREME_SWING_LOOKBACK}-bar structural stop`,
       `Research target ${targetR}R assigned after entry qualification`,
     ],
   };
