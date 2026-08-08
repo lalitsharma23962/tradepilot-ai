@@ -1,4 +1,5 @@
 import { evaluateProductionStrategy as evaluateEntryStrategy, type StrategyConfig, type StrategySignal } from './strategyV32';
+export type { StrategyConfig, StrategySignal } from './strategyV32';
 import type { MarketBar } from './marketData';
 
 /**
@@ -42,9 +43,36 @@ export function evaluateProductionStrategy(
   }
 
   const targetR = entrySignal.score >= ULTRA_SCORE ? RESEARCH_MAX_R : RESEARCH_MIN_R;
+  const targetDistance = risk * targetR;
+
+  // ROOT-CAUSE FIX: v32 already measured how far price realistically travels
+  // from setups like this one (pathCapacity, validated against its OWN
+  // 1.5-3R target). Substituting a 10R/15R target without re-checking it
+  // against that same measurement means every "A+" signal was really just an
+  // ordinary v32 setup with an arbitrary, unvalidated multiplier bolted
+  // on - which is exactly why fold 1 could get lucky (a real outsized move
+  // happened to reach it) while folds 2-3 saw every trade stopped out
+  // before the unvalidated target was ever in reach (PF 0.00, not low-PF).
+  // If the market doesn't support this distance, there is no trade - we do
+  // NOT fall back to a smaller R, since that would just re-attach a
+  // different arbitrary target to the same signal.
+  if (targetDistance > entrySignal.pathCapacity) {
+    return {
+      ...entrySignal,
+      action: 'WAIT',
+      strategy: 'No Trade',
+      takeProfit: entrySignal.entry,
+      riskReward: 0,
+      reasons: [
+        ...entrySignal.reasons,
+        `${targetR}R target (${targetDistance.toFixed(2)}) exceeds measured path capacity (${entrySignal.pathCapacity.toFixed(2)}) - market does not currently support this distance`,
+      ],
+    };
+  }
+
   const takeProfit = entrySignal.action === 'LONG'
-    ? entrySignal.entry + risk * targetR
-    : entrySignal.entry - risk * targetR;
+    ? entrySignal.entry + targetDistance
+    : entrySignal.entry - targetDistance;
 
   return {
     ...entrySignal,
