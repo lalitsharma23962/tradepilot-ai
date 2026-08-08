@@ -2,8 +2,8 @@ export type TradingMode='PAPER';
 export const TRADING_CONFIG={
  mode:'PAPER' as TradingMode,
  strategyVersion:'v35',
- minScore:96,
- ultraScore:99,
+ minScore:94,
+ ultraScore:94,
  researchMinRiskReward:10,
  researchMaxRiskReward:15,
  productionMinRiskReward:10,
