@@ -24,12 +24,17 @@ export function evaluateProductionStrategy(input:number[]|MarketBar[],config:Par
  const reclaimL=sideLong&&pullL&&e>e20&&Math.abs(e-e20)<=a*.75&&barL,reclaimS=sideShort&&pullS&&e<e20&&Math.abs(e-e20)<=a*.75&&barS;
  const rh=Math.max(...p.slice(-31,-1)),rl=Math.min(...p.slice(-31,-1));
  const breakL=sideLong&&e>rh+a*.02&&prev.close<=rh&&barL,breakS=sideShort&&e<rl-a*.02&&prev.close>=rl&&barS;
- const scores=[{side:'LONG' as Side,family:'trend',score:scoreTrend(p,e20,e50,e100,a,1)+(reclaimL?20:0)+(barL?5:0)+(ef24>=.18?5:0)},{side:'SHORT' as Side,family:'trend',score:scoreTrend(p,e20,e50,e100,a,-1)+(reclaimS?20:0)+(barS?5:0)+(ef24>=.18?5:0)},{side:'LONG' as Side,family:'breakout',score:scoreTrend(p,e20,e50,e100,a,1)+(breakL?35:0)+(barL?5:0)},{side:'SHORT' as Side,family:'breakout',score:scoreTrend(p,e20,e50,e100,a,-1)+(breakS?35:0)+(barS?5:0)}].filter(x=>x.score>=c.minScore).sort((x,y)=>y.score-x.score);
+ const scores=[
+  {side:'LONG' as Side,family:'trend',setup:reclaimL,score:scoreTrend(p,e20,e50,e100,a,1)+(reclaimL?20:0)+(barL?5:0)+(ef24>=.18?5:0)},
+  {side:'SHORT' as Side,family:'trend',setup:reclaimS,score:scoreTrend(p,e20,e50,e100,a,-1)+(reclaimS?20:0)+(barS?5:0)+(ef24>=.18?5:0)},
+  {side:'LONG' as Side,family:'breakout',setup:breakL,score:scoreTrend(p,e20,e50,e100,a,1)+(breakL?35:0)+(barL?5:0)},
+  {side:'SHORT' as Side,family:'breakout',setup:breakS,score:scoreTrend(p,e20,e50,e100,a,-1)+(breakS?35:0)+(barS?5:0)}
+ ].filter(x=>x.setup&&x.score>=c.minScore).sort((x,y)=>y.score-x.score);
  const w=scores[0];if(!w){if(c.funnel)c.funnel.rejectedScore++;return wait(e,['No A+ setup reached strict conviction threshold'])}
  const recent=b.slice(-(c.swingLookback??5)),low=Math.min(...recent.map(x=>x.low)),high=Math.max(...recent.map(x=>x.high));const risk=w.side==='LONG'?Math.max(e-low,a*.55):Math.max(high-e,a*.55),cap=a*(c.maxStructuralRiskAtr??1.35);if(risk>cap){if(c.funnel)c.funnel.rejectedStructuralStop++;return wait(e,['Structural stop exceeds ATR ceiling'],w.score)}
  const targetR=clamp(c.riskReward??(w.score>=99?15:10),c.minRiskReward,c.maxRiskReward),target=w.side==='LONG'?e+risk*targetR:e-risk*targetR;
- const pathBars=b.slice(-240,-5),barrier=w.side==='LONG'?Math.max(...pathBars.map(x=>x.high)):Math.min(...pathBars.map(x=>x.low)),room=w.side==='LONG'?barrier<=e?Infinity:barrier-e:e<=barrier?Infinity:e-barrier;
- if(room<risk*targetR*.85 && !(w.family==='breakout' && ((w.side==='LONG'&&e>rh)||(w.side==='SHORT'&&e<rl)))){if(c.funnel)c.funnel.rejectedPathCapacity++;return wait(e,[`${targetR}R path is blocked by historical structure`],w.score)}
+ const pathBars=b.slice(-240,-5),barrier=w.side==='LONG'?Math.max(...pathBars.map(x=>x.high)):Math.min(...pathBars.map(x=>x.low)),room=w.side==='LONG'?(barrier<=e?Infinity:barrier-e):(e<=barrier?Infinity:e-barrier);
+ if(room<risk*targetR && !(w.family==='breakout'&&((w.side==='LONG'&&e>rh)||(w.side==='SHORT'&&e<rl)))){if(c.funnel)c.funnel.rejectedPathCapacity++;return wait(e,[`${targetR}R path is blocked by historical structure`],w.score)}
  if(c.funnel)c.funnel.tradesOpened++;
  return {action:w.side,score:w.score,confidence:w.score,strategy:'Production Regime Breakout v33',entry:e,stopLoss:w.side==='LONG'?e-risk:e+risk,takeProfit:target,riskReward:targetR,family:w.family,reasons:[w.family==='breakout'?'A+ structural breakout':'A+ pullback/reclaim','Multi-horizon trend alignment','Strong decision candle','Structural stop','Historical path-capacity filter',`Target ${targetR}R`,`Score ${w.score}/100`]};
 }
