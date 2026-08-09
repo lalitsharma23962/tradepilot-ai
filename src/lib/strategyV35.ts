@@ -2,6 +2,7 @@ import { evaluateProductionStrategy as evaluateEntryStrategy, type StrategyConfi
 export type { StrategyConfig, StrategySignal } from './strategyV32';
 import type { MarketBar } from './marketData';
 import { TRADING_CONFIG } from './tradingConfig';
+import { runnerProtectedStop } from './runnerProtection';
 
 const ENTRY_MIN_R = 1.5;
 const ENTRY_MAX_R = 3;
@@ -29,7 +30,12 @@ const atrAt = (bars: MarketBar[], endExclusive: number, period = 20) => {
 };
 interface CapacityEvidence { capacityPrice: number; targetBeforeStopRate: number; samples: number; }
 
-/** v35 extreme-R feasibility uses only completed historical forward paths. */
+/**
+ * v35 extreme-R feasibility uses only completed historical forward paths.
+ * The simulated stop ratchet deliberately mirrors the shared execution helper:
+ * current stop/target are checked first for each bar, then runner protection is
+ * applied for the next bar. This keeps the research gate causal and execution-parity.
+ */
 function independentPathCapacity(input: number[] | MarketBar[], side: 'LONG' | 'SHORT', currentAtr: number, currentRisk: number, targetR: number, horizonBars: number, capacityQuantile: number): CapacityEvidence {
   const unavailable: CapacityEvidence = { capacityPrice: 0, targetBeforeStopRate: 0, samples: 0 };
   if (!input.length || typeof input[0] === 'number' || !(currentAtr > 0) || !(currentRisk > 0) || horizonBars < 1) return unavailable;
@@ -45,6 +51,8 @@ function independentPathCapacity(input: number[] | MarketBar[], side: 'LONG' | '
   const excursions: number[] = [];
   let targetBeforeStop = 0;
   let samples = 0;
+  const runnerSide = side === 'LONG' ? 1 : -1;
+
   for (let i = last - 1; i >= first; i -= horizonBars) {
     const atr = atrAt(completed, i + 1);
     if (!(atr > 0) || !Number.isFinite(atr)) continue;
@@ -52,22 +60,39 @@ function independentPathCapacity(input: number[] | MarketBar[], side: 'LONG' | '
     const stopDistance = currentRiskAtr * atr;
     const targetDistance = targetR * stopDistance;
     if (!(stopDistance > 0) || !(targetDistance > 0)) continue;
+
     let mfe = 0;
+    let simulatedStop = runnerSide === 1 ? start - stopDistance : start + stopDistance;
+    const simulatedTarget = runnerSide === 1 ? start + targetDistance : start - targetDistance;
     let outcome: 'TARGET' | 'STOP' | 'TIMEOUT' = 'TIMEOUT';
+
     for (let j = 1; j <= horizonBars; j++) {
       const b = completed[i + j];
       const favorable = side === 'LONG' ? b.high - start : start - b.low;
-      const adverse = side === 'LONG' ? start - b.low : b.high - start;
       mfe = Math.max(mfe, favorable);
-      const hitStop = adverse >= stopDistance;
-      const hitTarget = favorable >= targetDistance;
+
+      // Match backtest execution ordering: an existing stop/target is tested
+      // before the runner helper is allowed to ratchet the stop for this bar.
+      const hitStop = side === 'LONG' ? b.low <= simulatedStop : b.high >= simulatedStop;
+      const hitTarget = side === 'LONG' ? b.high >= simulatedTarget : b.low <= simulatedTarget;
       if (hitStop) { outcome = 'STOP'; break; }
       if (hitTarget) { outcome = 'TARGET'; break; }
+
+      simulatedStop = runnerProtectedStop(
+        runnerSide,
+        start,
+        simulatedTarget,
+        simulatedStop,
+        b.high,
+        b.low,
+      );
     }
+
     excursions.push(mfe / atr);
     samples++;
     if (outcome === 'TARGET') targetBeforeStop++;
   }
+
   if (samples < MIN_INDEPENDENT_SAMPLES) return unavailable;
   const capacityAtr = percentile(excursions, capacityQuantile);
   return { capacityPrice: Number.isFinite(capacityAtr) && capacityAtr > 0 ? currentAtr * capacityAtr : 0, targetBeforeStopRate: targetBeforeStop / samples, samples };
