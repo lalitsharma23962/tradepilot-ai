@@ -32,8 +32,13 @@ export function evaluateProductionStrategy(input:number[]|MarketBar[],config:Par
  const longConsistency=consistency(p.slice(-15),1),shortConsistency=consistency(p.slice(-15),-1),hourly=completedHourly(bars),hp=hourly.map(b=>b.close),h20=ema(hp,20),h40=ema(hp,40),h50=ema(hp,50);
  const hS12=hp.length>=12?slope(hp.slice(-12))/Math.max(entry,1):0,hS24=hp.length>=24?slope(hp.slice(-24))/Math.max(entry,1):0,hEff24=efficiency(hp.slice(-24));
  const hLong=hourly.length>=50?h20>h40&&h40>h50&&hS12>0&&hS24>=-0.000001&&hEff24>=.08:false,hShort=hourly.length>=50?h20<h40&&h40<h50&&hS12<0&&hS24<=0.000001&&hEff24>=.08:false;
- const strongLocalLong=up&&s24>0&&s48>0&&eff24>=.18&&eff48>=.12&&longConsistency>=.48&&sep>=.03;
- const strongLocalShort=down&&s24<0&&s48<0&&eff24>=.18&&eff48>=.12&&shortConsistency>=.48&&sep>=.03;
+ // Aggregate local regime evidence instead of requiring every secondary feature.
+ // The directional core remains mandatory; one secondary feature may be imperfect.
+ // Downstream family rules and the 94+ conviction gate remain unchanged.
+ const localLongEvidence=(up?1:0)+(s24>0?1:0)+(s48>0?1:0)+(eff24>=.18?1:0)+(eff48>=.12?1:0)+(longConsistency>=.48?1:0)+(sep>=.03?1:0);
+ const localShortEvidence=(down?1:0)+(s24<0?1:0)+(s48<0?1:0)+(eff24>=.18?1:0)+(eff48>=.12?1:0)+(shortConsistency>=.48?1:0)+(sep>=.03?1:0);
+ const strongLocalLong=up&&s24>0&&s48>0&&localLongEvidence>=5;
+ const strongLocalShort=down&&s24<0&&s48<0&&localShortEvidence>=5;
  const regimeLong=hLong||strongLocalLong,regimeShort=hShort||strongLocalShort;
  const lastBar=bars.at(-1)!,prevBar=bars.at(-2)!,lastRange=Math.max(lastBar.high-lastBar.low,entry*1e-8),bodyRatio=Math.abs(lastBar.close-lastBar.open)/lastRange,closeLocation=(lastBar.close-lastBar.low)/lastRange;
  const barLong=lastBar.close>lastBar.open&&lastBar.close>=prevBar.close&&bodyRatio>=.25&&closeLocation>=.60,barShort=lastBar.close<lastBar.open&&lastBar.close<=prevBar.close&&bodyRatio>=.25&&closeLocation<=.40;
@@ -46,7 +51,8 @@ export function evaluateProductionStrategy(input:number[]|MarketBar[],config:Par
  const prevBars=bars.slice(0,-3),prevFast=trueAtr(prevBars,12),prevSlow=trueAtr(prevBars,48),prevExpansion=prevSlow>0?prevFast/prevSlow:1,compression=prevExpansion<.95,expanding=expansion>Math.max(.95,prevExpansion*1.03)&&expansion>prevExpansion+.02;
  const compressionLong=regimeLong&&momentumLong&&compression&&expanding&&entry>e20&&nearEmaLong&&barLong,compressionShort=regimeShort&&momentumShort&&compression&&expanding&&entry<e20&&nearEmaShort&&barShort;
  const mid20=mean(p.slice(-20)),sd20=std(p.slice(-20)),upper20=mid20+2*sd20,lower20=mid20-2*sd20;
- const rangeRegime=sep<=.035&&eff24<=.30&&eff48<=.24&&expansion<=1.10;
+ const rangeEvidence=(sep<=.035?1:0)+(eff24<=.30?1:0)+(eff48<=.24?1:0)+(expansion<=1.10?1:0);
+ const rangeRegime=rangeEvidence>=3;
  const reversionLong=rangeRegime&&prevRsi<=32&&rrsi>prevRsi&&rrsi>=30&&entry>prevBar.close&&barLong&&entry>=lower20-a*.15&&entry<=lower20+a*.35;
  const reversionShort=rangeRegime&&prevRsi>=68&&rrsi<prevRsi&&rrsi<=70&&entry<prevBar.close&&barShort&&entry<=upper20+a*.15&&entry>=upper20-a*.35;
  const costAware=vol>=Math.max(.00025,cost*.45)&&vol<=.05;
