@@ -16,8 +16,12 @@ const ENTRY_MIN_R = 1.5;
 const ENTRY_MAX_R = 3;
 const RESEARCH_MIN_R = TRADING_CONFIG.researchMinRiskReward;
 const RESEARCH_MAX_R = TRADING_CONFIG.researchMaxRiskReward;
-const CAPACITY_LOOKBACK = 240;
 const DEFAULT_CAPACITY_HORIZON = TRADING_CONFIG.maxBarsInTrade['5m'];
+
+// A sample is only counted as independent when its entire forward evaluation
+// window does not overlap another sample's forward window. Keep this exported
+// so the validation runner can reserve exactly enough warm-up history.
+export const MIN_INDEPENDENT_SAMPLES = 20;
 
 const mean = (v: number[]) => v.length ? v.reduce((a, b) => a + b, 0) / v.length : 0;
 
@@ -71,11 +75,16 @@ function independentPathCapacity(
   if (!input.length || typeof input[0] === 'number' || !(currentAtr > 0) || !(currentRisk > 0) || horizonBars < 1) return unavailable;
 
   const bars = input as MarketBar[];
-  if (bars.length < horizonBars + 40) return unavailable;
+  // Every sample needs a complete horizonBars forward window. Requiring
+  // MIN_INDEPENDENT_SAMPLES non-overlapping windows makes the history
+  // requirement scale with the actual holding horizon instead of a fixed
+  // lookback that would create heavily overlapping pseudo-samples.
+  const requiredLookback = MIN_INDEPENDENT_SAMPLES * horizonBars;
+  if (bars.length < horizonBars + requiredLookback + 21) return unavailable;
 
   const completed = bars.slice(0, -1);
-  const first = Math.max(20, completed.length - CAPACITY_LOOKBACK - horizonBars);
   const last = completed.length - horizonBars;
+  const first = Math.max(20, last - requiredLookback);
   if (last <= first) return unavailable;
 
   const currentRiskAtr = currentRisk / currentAtr;
@@ -85,7 +94,10 @@ function independentPathCapacity(
   let targetBeforeStop = 0;
   let samples = 0;
 
-  for (let i = first; i < last; i++) {
+  // Stride by the complete forward horizon. Adjacent samples therefore never
+  // share a future evaluation bar. With a 1440-bar 5m horizon this produces
+  // 20 genuinely non-overlapping episodes rather than 240 near-duplicates.
+  for (let i = last - 1; i >= first; i -= horizonBars) {
     const atr = atrAt(completed, i + 1);
     if (!(atr > 0) || !Number.isFinite(atr)) continue;
 
@@ -120,7 +132,7 @@ function independentPathCapacity(
     if (outcome === 'TARGET') targetBeforeStop++;
   }
 
-  if (samples < 20) return unavailable;
+  if (samples < MIN_INDEPENDENT_SAMPLES) return unavailable;
   const capacityAtr = percentile(excursions, capacityQuantile);
   return {
     capacityPrice: Number.isFinite(capacityAtr) && capacityAtr > 0 ? currentAtr * capacityAtr : 0,
@@ -185,7 +197,7 @@ export function evaluateProductionStrategy(
   const evidence = independentPathCapacity(capacityBars, entrySignal.action, currentAtr, risk, targetR, horizonBars, capacityQuantile);
 
   const capacityPass = Number.isFinite(evidence.capacityPrice) && evidence.capacityPrice > 0 && targetDistance <= evidence.capacityPrice;
-  const pathOrderPass = evidence.samples >= 20 && evidence.targetBeforeStopRate >= requiredHitRate;
+  const pathOrderPass = evidence.samples >= MIN_INDEPENDENT_SAMPLES && evidence.targetBeforeStopRate >= requiredHitRate;
 
   if (!capacityPass || !pathOrderPass) {
     if (config.funnel) config.funnel.rejectedPathCapacity++;
