@@ -21,15 +21,16 @@ function simulate(c:Candle[],cfg:BacktestConfig,start:number,end:number,funnel?:
   const b=c[i],hist=c.slice(Math.max(0,i-CAPACITY_CONTEXT+1),i+1);let closed=false;
   if(open){
    open.bars++;
-   // Evaluate exits against the stop/target active at the start of the bar.
-   // A newly ratcheted stop becomes active on the next bar, avoiding any
-   // favorable intrabar ordering assumption from OHLC data.
    const stop=open.side===1?b.low<=open.stop:b.high>=open.stop,tp=open.side===1?b.high>=open.target:b.low<=open.target,timeout=open.bars>=cfg.maxBarsInTrade;
    if(stop||tp||timeout){const raw=stop?open.stop:tp?open.target:b.close,exit=raw*(1-open.side*slip),gross=open.side*(exit-open.entry)*open.qty,fees=(Math.abs(open.entry*open.qty)+Math.abs(exit*open.qty))*fee;record(gross-fees,open.family);open=null;closed=true;}
    else open.stop=runnerProtectedStop(open.side,open.entry,open.target,open.stop,b.high,b.low);
   }
   if(!open&&!closed&&i<end-1){
-   const signal=evaluateProductionStrategy(hist,{minScore:MIN_SCORE,minRiskReward:TRADING_CONFIG.researchMinRiskReward,maxRiskReward:TRADING_CONFIG.researchMaxRiskReward,lookback:LOOKBACK,feeBps:cfg.feeBps,slippageBps:cfg.slippageBps,maxStructuralRiskAtr:TRADING_CONFIG.maxStructuralRiskAtr,swingLookback:TRADING_CONFIG.swingLookback,capacityHorizonBars:cfg.maxBarsInTrade,capacityBars:hist} as any);
+   // IMPORTANT: pass the same funnel object through the strategy call. The
+   // strategy owns the rejection counters; omitting this argument makes the
+   // validation UI report zeros even while the exact same simulation opens
+   // trades. This was the source of the 23-trades/0-bars contradiction.
+   const signal=evaluateProductionStrategy(hist,{minScore:MIN_SCORE,minRiskReward:TRADING_CONFIG.researchMinRiskReward,maxRiskReward:TRADING_CONFIG.researchMaxRiskReward,lookback:LOOKBACK,feeBps:cfg.feeBps,slippageBps:cfg.slippageBps,maxStructuralRiskAtr:TRADING_CONFIG.maxStructuralRiskAtr,swingLookback:TRADING_CONFIG.swingLookback,capacityHorizonBars:cfg.maxBarsInTrade,capacityBars:hist,funnel} as any);
    if(signal.action!=='WAIT'){
     const side=signal.action==='LONG'?1:-1,entry=signal.entry*(1+side*slip),signalRisk=Math.abs(signal.entry-signal.stopLoss),rr=signal.riskReward,risk=signalRisk,stop=entry-side*risk,target=entry+side*risk*rr;
     const riskBudget=Math.max(equity,0)*cfg.riskPerTradePct/100,maxNotional=Math.max(equity,0)*cfg.maxPositionPct/100*Math.max(1,cfg.leverage),q=Math.min(riskBudget/Math.max(risk,entry*.0008),maxNotional/entry);
