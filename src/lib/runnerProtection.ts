@@ -1,13 +1,16 @@
 export type RunnerSide = 1 | -1;
 
-// Milestones are fractions of the immutable entry-to-target distance.
-// 0.125 of a 10R target = 1.25R; 0.25 = 2.5R; 0.40 = 4R.
-export const RUNNER_BREAKEVEN_FRACTION = 0.125;
+// Protection milestones are earlier than the previous v35 schedule.
+// They remain anchored to the immutable entry -> target distance, but now
+// correspond to roughly 1R / 2R / 3R on a 10R target and 1.5R / 3R / 4.5R
+// on a 15R target. The previous 1.25R / 2.5R / 4R (10R) schedule, and its
+// even later equivalent for 15R, delayed protection too far into the move.
+export const RUNNER_BREAKEVEN_FRACTION = 0.10;
 export const RUNNER_COST_BUFFER_FRACTION = 0.003;
-export const RUNNER_LOCK_FRACTION = 0.25;
-export const RUNNER_LOCK_KEEP_FRACTION = 0.10;
-export const RUNNER_TRAIL_START_FRACTION = 0.40;
-export const RUNNER_TRAIL_GIVEBACK_FRACTION = 0.15;
+export const RUNNER_LOCK_FRACTION = 0.20;
+export const RUNNER_LOCK_KEEP_FRACTION = 0.05;
+export const RUNNER_TRAIL_START_FRACTION = 0.30;
+export const RUNNER_TRAIL_GIVEBACK_FRACTION = 0.10;
 
 /**
  * Monotonically ratchets the stop after favorable movement.
