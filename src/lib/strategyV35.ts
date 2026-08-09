@@ -18,7 +18,6 @@ const RESEARCH_MIN_R = TRADING_CONFIG.researchMinRiskReward;
 const RESEARCH_MAX_R = TRADING_CONFIG.researchMaxRiskReward;
 const CAPACITY_LOOKBACK = 240;
 const DEFAULT_CAPACITY_HORIZON = TRADING_CONFIG.maxBarsInTrade['5m'];
-const CAPACITY_QUANTILE = 0.80;
 
 const mean = (v: number[]) => v.length ? v.reduce((a, b) => a + b, 0) / v.length : 0;
 
@@ -53,6 +52,11 @@ interface CapacityEvidence {
  * the future path is checked bar-by-bar. If a bar touches both stop and target,
  * stop is conservatively considered first. A path that times out without
  * reaching target before stop is not counted as a success.
+ *
+ * The excursion percentile is supplied by the economic target-hit requirement
+ * rather than a fixed 80% constant. This keeps the excursion gate mathematically
+ * aligned with the same PF/cost hurdle used by target-before-stop, without
+ * weakening the actual target-before-stop test.
  */
 function independentPathCapacity(
   input: number[] | MarketBar[],
@@ -61,6 +65,7 @@ function independentPathCapacity(
   currentRisk: number,
   targetR: number,
   horizonBars: number,
+  capacityQuantile: number,
 ): CapacityEvidence {
   const unavailable: CapacityEvidence = { capacityPrice: 0, targetBeforeStopRate: 0, samples: 0 };
   if (!input.length || typeof input[0] === 'number' || !(currentAtr > 0) || !(currentRisk > 0) || horizonBars < 1) return unavailable;
@@ -116,7 +121,7 @@ function independentPathCapacity(
   }
 
   if (samples < 20) return unavailable;
-  const capacityAtr = percentile(excursions, CAPACITY_QUANTILE);
+  const capacityAtr = percentile(excursions, capacityQuantile);
   return {
     capacityPrice: Number.isFinite(capacityAtr) && capacityAtr > 0 ? currentAtr * capacityAtr : 0,
     targetBeforeStopRate: targetBeforeStop / samples,
@@ -156,10 +161,6 @@ export function evaluateProductionStrategy(
 
   const targetR = entrySignal.score >= ultraScore ? RESEARCH_MAX_R : RESEARCH_MIN_R;
   const targetDistance = risk * targetR;
-  const capacityBars = extendedConfig.capacityBars ?? input;
-  const currentAtr = independentCurrentAtr(capacityBars);
-  const horizonBars = Math.max(1, Math.floor(config.capacityHorizonBars ?? DEFAULT_CAPACITY_HORIZON));
-  const evidence = independentPathCapacity(capacityBars, entrySignal.action, currentAtr, risk, targetR, horizonBars);
 
   // The historical hit-rate requirement is derived from the configured PF
   // gate and actual round-trip cost expressed in units of the setup's risk.
@@ -168,9 +169,20 @@ export function evaluateProductionStrategy(
   const roundTripCost = 2 * ((config.feeBps ?? TRADING_CONFIG.feeBps) + (config.slippageBps ?? TRADING_CONFIG.slippageBps)) / 10000;
   const costInR = risk > 0 ? roundTripCost * entrySignal.entry / risk : Infinity;
   const pfFloor = TRADING_CONFIG.minProfitFactor;
-  const requiredHitRate = Number.isFinite(costInR)
+  const economicHitRate = Number.isFinite(costInR)
     ? (pfFloor * (1 + costInR)) / ((targetR - costInR) + pfFloor * (1 + costInR))
     : 1;
+  const requiredHitRate = Math.max(0, Math.min(1, economicHitRate));
+
+  const capacityBars = extendedConfig.capacityBars ?? input;
+  const currentAtr = independentCurrentAtr(capacityBars);
+  const horizonBars = Math.max(1, Math.floor(config.capacityHorizonBars ?? DEFAULT_CAPACITY_HORIZON));
+  // If the economic hurdle requires H% of paths to reach the target, the
+  // corresponding MFE quantile is 1-H. This replaces the arbitrary fixed
+  // 80th-percentile excursion hurdle while leaving the independent
+  // target-before-stop rate test fully intact.
+  const capacityQuantile = 1 - requiredHitRate;
+  const evidence = independentPathCapacity(capacityBars, entrySignal.action, currentAtr, risk, targetR, horizonBars, capacityQuantile);
 
   const capacityPass = Number.isFinite(evidence.capacityPrice) && evidence.capacityPrice > 0 && targetDistance <= evidence.capacityPrice;
   const pathOrderPass = evidence.samples >= 20 && evidence.targetBeforeStopRate >= requiredHitRate;
