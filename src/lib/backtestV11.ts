@@ -5,6 +5,8 @@ import { TRADING_CONFIG } from './tradingConfig';
 import { runnerProtectedStop } from './runnerProtection';
 
 const MAX_HISTORY_BARS=60000,PRE_OOS=TRADING_CONFIG.preOosFraction,FOLDS=TRADING_CONFIG.folds,LOOKBACK=TRADING_CONFIG.lookback,MIN_FOLD_TRADES=TRADING_CONFIG.minFoldTrades,MIN_TEST_TRADES=TRADING_CONFIG.minTestTrades,MIN_PF=TRADING_CONFIG.minProfitFactor,MAX_DD=TRADING_CONFIG.maxDrawdownPct,MAX_MC_LOSS=TRADING_CONFIG.maxMonteCarloLossProbability,MIN_SCORE=TRADING_CONFIG.minScore;
+const MAX_CAPACITY_HORIZON=Math.max(...Object.values(TRADING_CONFIG.maxBarsInTrade));
+const CAPACITY_CONTEXT=LOOKBACK+MAX_CAPACITY_HORIZON+260;
 const mean=(a:number[])=>a.length?a.reduce((x,y)=>x+y,0)/a.length:0;
 function summarize(id:string,returns:number[],initial:number):StrategyResult{const wins=returns.filter(x=>x>0),losses=returns.filter(x=>x<0),gp=wins.reduce((a,b)=>a+b,0),gl=Math.abs(losses.reduce((a,b)=>a+b,0)),pf=gl?gp/gl:0;let equity=initial,peak=initial,dd=0;for(const r of returns){equity*=1+r/100;peak=Math.max(peak,equity);dd=Math.max(dd,(peak-equity)/peak*100);}const ret=(equity/initial-1)*100,wr=returns.length?wins.length/returns.length*100:0,avg=mean(returns),sh=returns.length?Math.sqrt(returns.length)*avg/(Math.sqrt(mean(returns.map(x=>(x-avg)**2)))||1):0;return{id,name:'Production Regime Breakout v35',trades:returns.length,wins:wins.length,losses:losses.length,winRate:wr,profitFactor:pf,netPnl:equity-initial,returnPct:ret,maxDrawdownPct:dd,avgTrade:avg,score:(ret+Math.min(pf,5)*2.5+sh*2+wr/25-dd*.8)*Math.min(1,returns.length/30),tradeReturnsPct:returns,sharpe:sh,sortino:sh,calmar:dd?ret/dd:0,expectancy:avg,turnoverPct:returns.reduce((a,b)=>a+Math.abs(b),0)};}
 function summarizeFamily(returns:number[]):FamilyPerformance{const wins=returns.filter(x=>x>0),losses=returns.filter(x=>x<0),gp=wins.reduce((a,b)=>a+b,0),gl=Math.abs(losses.reduce((a,b)=>a+b,0)),pf=gl?gp/gl:(gp>0?Infinity:0);return{trades:returns.length,wins:wins.length,winRate:returns.length?wins.length/returns.length*100:0,profitFactor:Number.isFinite(pf)?pf:0,returnPct:returns.reduce((a,b)=>a+b,0),avgTrade:mean(returns)};}
@@ -16,7 +18,7 @@ function simulate(c:Candle[],cfg:BacktestConfig,start:number,end:number,funnel?:
  const record=(pnl:number,family:string)=>{const pct=equity?100*pnl/equity:0;returns.push(pct);familyReturns?.push({pct,family});equity+=pnl;};
  const closeOpen=(bar:Candle)=>{if(!open)return;const exit=bar.close*(1-open.side*slip),gross=open.side*(exit-open.entry)*open.qty,fees=(Math.abs(open.entry*open.qty)+Math.abs(exit*open.qty))*fee;record(gross-fees,open.family);open=null;};
  for(let i=Math.max(start,LOOKBACK);i<end;i++){
-  const b=c[i],hist=c.slice(Math.max(0,i-LOOKBACK+1),i+1);let closed=false;
+  const b=c[i],hist=c.slice(Math.max(0,i-CAPACITY_CONTEXT+1),i+1);let closed=false;
   if(open){
    open.bars++;
    // Evaluate exits against the stop/target active at the start of the bar.
@@ -27,7 +29,7 @@ function simulate(c:Candle[],cfg:BacktestConfig,start:number,end:number,funnel?:
    else open.stop=runnerProtectedStop(open.side,open.entry,open.target,open.stop,b.high,b.low);
   }
   if(!open&&!closed&&i<end-1){
-   const signal=evaluateProductionStrategy(hist,{minScore:MIN_SCORE,minRiskReward:TRADING_CONFIG.researchMinRiskReward,maxRiskReward:TRADING_CONFIG.researchMaxRiskReward,lookback:LOOKBACK,feeBps:cfg.feeBps,slippageBps:cfg.slippageBps,maxStructuralRiskAtr:TRADING_CONFIG.maxStructuralRiskAtr,swingLookback:TRADING_CONFIG.swingLookback,funnel});
+   const signal=evaluateProductionStrategy(hist,{minScore:MIN_SCORE,minRiskReward:TRADING_CONFIG.researchMinRiskReward,maxRiskReward:TRADING_CONFIG.researchMaxRiskReward,lookback:LOOKBACK,feeBps:cfg.feeBps,slippageBps:cfg.slippageBps,maxStructuralRiskAtr:TRADING_CONFIG.maxStructuralRiskAtr,swingLookback:TRADING_CONFIG.swingLookback,capacityHorizonBars:cfg.maxBarsInTrade,capacityBars:hist} as any);
    if(signal.action!=='WAIT'){
     const side=signal.action==='LONG'?1:-1,entry=signal.entry*(1+side*slip),signalRisk=Math.abs(signal.entry-signal.stopLoss),rr=signal.riskReward,risk=signalRisk,stop=entry-side*risk,target=entry+side*risk*rr;
     const riskBudget=Math.max(equity,0)*cfg.riskPerTradePct/100,maxNotional=Math.max(equity,0)*cfg.maxPositionPct/100*Math.max(1,cfg.leverage),q=Math.min(riskBudget/Math.max(risk,entry*.0008),maxNotional/entry);
