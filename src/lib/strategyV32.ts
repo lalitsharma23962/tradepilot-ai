@@ -3,9 +3,15 @@ import { TRADING_CONFIG } from './tradingConfig';
 import type { MarketBar } from './marketData';
 import type { FunnelCounters } from './backtestV6';
 
-export interface StrategySignal { action: Side|'WAIT'; score:number; confidence:number; strategy:string; entry:number; stopLoss:number; takeProfit:number; riskReward:number; family:string; reasons:string[]; pathCapacity:number; }
-export interface StrategyConfig { minScore:number; minRiskReward:number; maxRiskReward:number; atrStopMultiple:number; lookback:number; riskPerTradePct?:number; strategyLimit?:number; feeBps?:number; slippageBps?:number; riskReward?:number; maxStructuralRiskAtr?:number; swingLookback?:number; capacityHorizonBars?:number; skipLegacyPathCapacity?:boolean; funnel?:FunnelCounters; }
-const DEFAULT_CONFIG:StrategyConfig={minScore:TRADING_CONFIG.minScore,minRiskReward:TRADING_CONFIG.productionMinRiskReward,maxRiskReward:TRADING_CONFIG.productionMaxRiskReward,atrStopMultiple:TRADING_CONFIG.atrStopMultiple,lookback:TRADING_CONFIG.lookback,feeBps:TRADING_CONFIG.feeBps,slippageBps:TRADING_CONFIG.slippageBps,maxStructuralRiskAtr:TRADING_CONFIG.maxStructuralRiskAtr,swingLookback:TRADING_CONFIG.swingLookback};
+export interface StrategySignal { action: Side|'WAIT'; score:number; confidence:number; strategy:string; entry:number; stopLoss:number; takeProfit:number; riskReward:number; family:string; pathCapacity:number; reasons:string[]; }
+export interface StrategyConfig { minScore:number; minRiskReward:number; maxRiskReward:number; atrStopMultiple:number; lookback:number; riskPerTradePct?:number; strategyLimit?:number; feeBps?:number; slippageBps?:number; riskReward?:number; minStopAtr?:number; maxStructuralRiskAtr?:number; maxCostFractionOfRisk?:number; swingLookback?:number; capacityHorizonBars?:number; skipLegacyPathCapacity?:boolean; funnel?:FunnelCounters; }
+
+const DEFAULT_CONFIG:StrategyConfig={
+ minScore:TRADING_CONFIG.minScore,minRiskReward:TRADING_CONFIG.productionMinRiskReward,maxRiskReward:TRADING_CONFIG.productionMaxRiskReward,
+ atrStopMultiple:TRADING_CONFIG.atrStopMultiple,lookback:TRADING_CONFIG.lookback,feeBps:TRADING_CONFIG.feeBps,slippageBps:TRADING_CONFIG.slippageBps,
+ minStopAtr:TRADING_CONFIG.minStopAtr,maxStructuralRiskAtr:TRADING_CONFIG.maxStructuralRiskAtr,maxCostFractionOfRisk:TRADING_CONFIG.maxCostFractionOfRisk,
+ swingLookback:TRADING_CONFIG.swingLookback,
+};
 const mean=(x:number[])=>x.length?x.reduce((a,b)=>a+b,0)/x.length:0;
 const std=(x:number[])=>{const m=mean(x);return x.length>1?Math.sqrt(mean(x.map(v=>(v-m)**2))):0;};
 const ema=(x:number[],p:number)=>{if(!x.length)return 0;const k=2/(p+1);let e=x[0];for(let i=1;i<x.length;i++)e=x[i]*k+e*(1-k);return e;};
@@ -15,11 +21,11 @@ const rsi=(x:number[])=>{const s=x.slice(-15),d=s.slice(1).map((v,i)=>v-s[i]),g=
 const slope=(x:number[])=>{if(x.length<2)return 0;const n=x.length,xm=(n-1)/2,ym=mean(x);let a=0,b=0;for(let i=0;i<n;i++){a+=(i-xm)*(x[i]-ym);b+=(i-xm)**2;}return b?a/b:0;};
 const efficiency=(x:number[])=>{if(x.length<3)return 0;const net=Math.abs(x.at(-1)!-x[0]);const path=x.slice(1).reduce((s,v,i)=>s+Math.abs(v-x[i]),0);return path?net/path:0;};
 const consistency=(x:number[],side:1|-1)=>{if(x.length<2)return 0;const d=x.slice(1).map((v,i)=>v-x[i]);return d.filter(v=>side===1?v>0:v<0).length/d.length;};
-const wait=(entry:number,reasons:string[],score=0):StrategySignal=>({action:'WAIT',score:Math.round(clamp(score,0,100)),confidence:Math.round(clamp(score,0,100)),strategy:'No Trade',entry,stopLoss:entry,takeProfit:entry,riskReward:0,family:'none',reasons,pathCapacity:0});
+const wait=(entry:number,reasons:string[],score=0):StrategySignal=>({action:'WAIT',score:Math.round(clamp(score,0,100)),confidence:Math.round(clamp(score,0,100)),strategy:'No Trade',entry,stopLoss:entry,takeProfit:entry,riskReward:0,family:'none',pathCapacity:0,reasons});
 function asBars(input:number[]|MarketBar[]):MarketBar[]{if(!input.length)return[];if(typeof input[0]==='number'){const p=input as number[];return p.map((close,i)=>({openTime:i,open:close,high:close,low:close,close,volume:0}));}return input as MarketBar[];}
 function completedHourly(bars:MarketBar[]):MarketBar[]{if(bars.length<8)return[];const steps=bars.slice(1).map((b,i)=>b.openTime-bars[i].openTime).filter(x=>x>0).sort((a,b)=>a-b),step=steps[Math.floor(steps.length/2)]??0;if(step<=0||step>=3600000||3600000%step!==0)return[];const perHour=3600000/step,groups=new Map<number,MarketBar[]>();for(const b of bars){const key=Math.floor(b.openTime/3600000)*3600000;const g=groups.get(key);if(g)g.push(b);else groups.set(key,[b]);}return Array.from(groups.entries()).sort((a,b)=>a[0]-b[0]).filter(([,g])=>g.length===perHour).map(([openTime,g])=>({openTime,open:g[0].open,high:Math.max(...g.map(x=>x.high)),low:Math.min(...g.map(x=>x.low)),close:g[g.length-1].close,volume:g.reduce((s,x)=>s+x.volume,0)}));}
 
-/** v32: entry-quality-first adaptive regime strategy. The hard validation gate is unchanged. */
+/** v32 is entry-quality and structural-risk logic. v35 owns production path feasibility. */
 export function evaluateProductionStrategy(input:number[]|MarketBar[],config:Partial<StrategyConfig>={}):StrategySignal{
  const cfg={...DEFAULT_CONFIG,...config},bars=asBars(input).filter(b=>Number.isFinite(b.close)&&b.close>0).slice(-cfg.lookback),p=bars.map(b=>b.close),entry=p.at(-1)??0;
  if(cfg.funnel)cfg.funnel.barsEvaluated++;
@@ -28,16 +34,15 @@ export function evaluateProductionStrategy(input:number[]|MarketBar[],config:Par
  const s12=slope(p.slice(-12))/entry,s24=slope(p.slice(-24))/entry,s48=slope(p.slice(-48))/entry,eff24=efficiency(p.slice(-24)),eff48=efficiency(p.slice(-48));
  const sep=Math.abs(e20-e50)/Math.max(a,entry*1e-6),expansion=aSlow>0?aFast/aSlow:1,vol=a/entry,cost=2*((cfg.feeBps??10)+(cfg.slippageBps??2))/10000;
  const up=e20>e50&&e50>e100,down=e20<e50&&e50<e100,rangeHigh=Math.max(...p.slice(-21,-1)),rangeLow=Math.min(...p.slice(-21,-1));
- // Keep the short-term directional impulse strict, but do not require both longer slopes to agree. The 94+ score gate and downstream family rules remain the primary conviction filters.
  const momentumLong=s12>Math.max(.00001,vol*.0035)&&(s24>0||s48>0)&&(eff24>=.12||eff48>=.10),momentumShort=s12<-Math.max(.00001,vol*.0035)&&(s24<0||s48<0)&&(eff24>=.12||eff48>=.10);
  const longConsistency=consistency(p.slice(-15),1),shortConsistency=consistency(p.slice(-15),-1),hourly=completedHourly(bars),hp=hourly.map(b=>b.close),h20=ema(hp,20),h40=ema(hp,40),h50=ema(hp,50);
  const hS12=hp.length>=12?slope(hp.slice(-12))/Math.max(entry,1):0,hS24=hp.length>=24?slope(hp.slice(-24))/Math.max(entry,1):0,hEff24=efficiency(hp.slice(-24));
  const hLong=hourly.length>=50?h20>h40&&h40>h50&&hS12>0&&hS24>=-0.000001&&hEff24>=.08:false,hShort=hourly.length>=50?h20<h40&&h40<h50&&hS12<0&&hS24<=0.000001&&hEff24>=.08:false;
- // Aggregate local regime evidence. A strong directional stack plus 3 of 5 secondary features is enough to classify the local regime; entry conviction is still enforced below at 94+.
+ // Require 5 of 7 local regime features rather than an all-or-nothing conjunction.
+ // This is still selective, but it removes the known 94%+ no-pattern bottleneck.
  const localLongEvidence=(up?1:0)+(s24>0?1:0)+(s48>0?1:0)+(eff24>=.18?1:0)+(eff48>=.12?1:0)+(longConsistency>=.48?1:0)+(sep>=.03?1:0);
  const localShortEvidence=(down?1:0)+(s24<0?1:0)+(s48<0?1:0)+(eff24>=.18?1:0)+(eff48>=.12?1:0)+(shortConsistency>=.48?1:0)+(sep>=.03?1:0);
- const strongLocalLong=up&&(s24>0||s48>0)&&localLongEvidence>=5;
- const strongLocalShort=down&&(s24<0||s48<0)&&localShortEvidence>=5;
+ const strongLocalLong=up&&(s24>0||s48>0)&&localLongEvidence>=5,strongLocalShort=down&&(s24<0||s48<0)&&localShortEvidence>=5;
  const regimeLong=hLong||strongLocalLong,regimeShort=hShort||strongLocalShort;
  const lastBar=bars.at(-1)!,prevBar=bars.at(-2)!,lastRange=Math.max(lastBar.high-lastBar.low,entry*1e-8),bodyRatio=Math.abs(lastBar.close-lastBar.open)/lastRange,closeLocation=(lastBar.close-lastBar.low)/lastRange;
  const barLong=lastBar.close>lastBar.open&&lastBar.close>=prevBar.close&&bodyRatio>=.25&&closeLocation>=.60,barShort=lastBar.close<lastBar.open&&lastBar.close<=prevBar.close&&bodyRatio>=.25&&closeLocation<=.40;
@@ -50,8 +55,7 @@ export function evaluateProductionStrategy(input:number[]|MarketBar[],config:Par
  const prevBars=bars.slice(0,-3),prevFast=trueAtr(prevBars,12),prevSlow=trueAtr(prevBars,48),prevExpansion=prevSlow>0?prevFast/prevSlow:1,compression=prevExpansion<.95,expanding=expansion>Math.max(.95,prevExpansion*1.03)&&expansion>prevExpansion+.02;
  const compressionLong=regimeLong&&momentumLong&&compression&&expanding&&entry>e20&&nearEmaLong&&barLong,compressionShort=regimeShort&&momentumShort&&compression&&expanding&&entry<e20&&nearEmaShort&&barShort;
  const mid20=mean(p.slice(-20)),sd20=std(p.slice(-20)),upper20=mid20+2*sd20,lower20=mid20-2*sd20;
- const rangeEvidence=(sep<=.035?1:0)+(eff24<=.30?1:0)+(eff48<=.24?1:0)+(expansion<=1.10?1:0);
- const rangeRegime=rangeEvidence>=3;
+ const rangeEvidence=(sep<=.035?1:0)+(eff24<=.30?1:0)+(eff48<=.24?1:0)+(expansion<=1.10?1:0),rangeRegime=rangeEvidence>=3;
  const reversionLong=rangeRegime&&prevRsi<=32&&rrsi>prevRsi&&rrsi>=30&&entry>prevBar.close&&barLong&&entry>=lower20-a*.15&&entry<=lower20+a*.35;
  const reversionShort=rangeRegime&&prevRsi>=68&&rrsi<prevRsi&&rrsi<=70&&entry<prevBar.close&&barShort&&entry<=upper20+a*.15&&entry>=upper20-a*.35;
  const costAware=vol>=Math.max(.00025,cost*.45)&&vol<=.05;
@@ -65,17 +69,23 @@ export function evaluateProductionStrategy(input:number[]|MarketBar[],config:Par
  const reversionShortScore=(rangeRegime?20:0)+(reversionShort?25:0)+(prevRsi>=75?15:0)+(rrsi<=70&&rrsi>=58?10:0)+(entry<=upper20?10:0)+(barShort?10:0)+(costAware?5:0)+(Math.abs(entry-mid20)<=a*1.5?5:0);
  const candidates:{side:Side;family:string;score:number}[]=[];
  if(trendLong)candidates.push({side:'LONG',family:'trend',score:trendLongScore});if(trendShort)candidates.push({side:'SHORT',family:'trend',score:trendShortScore});if(breakoutLong)candidates.push({side:'LONG',family:'breakout',score:breakoutLongScore});if(breakoutShort)candidates.push({side:'SHORT',family:'breakout',score:breakoutShortScore});if(compressionLong)candidates.push({side:'LONG',family:'compression',score:compressionLongScore});if(compressionShort)candidates.push({side:'SHORT',family:'compression',score:compressionShortScore});if(reversionLong)candidates.push({side:'LONG',family:'reversion',score:reversionLongScore});if(reversionShort)candidates.push({side:'SHORT',family:'reversion',score:reversionShortScore});
- candidates.sort((a,b)=>b.score-a.score);const minScore=Math.max(80,cfg.minScore),winner=candidates.find(x=>x.score>=minScore),score=winner?.score??(candidates[0]?.score??0),side:Side|'WAIT'=winner?.side??'WAIT',family=winner?.family??'none';
+ candidates.sort((a,b)=>b.score-a.score);
+ const minScore=Math.max(78,cfg.minScore),winner=candidates.find(x=>x.score>=minScore),score=winner?.score??(candidates[0]?.score??0),side:Side|'WAIT'=winner?.side??'WAIT',family=winner?.family??'none';
  if(cfg.funnel){if(trendLong||trendShort)cfg.funnel.familyCandidatesTrend++;if(breakoutLong||breakoutShort)cfg.funnel.familyCandidatesBreakout++;if(trendLong||trendShort)cfg.funnel.familyCandidatesRetest++;if(compressionLong||compressionShort)cfg.funnel.familyCandidatesCompression++;if(reversionLong||reversionShort)cfg.funnel.familyCandidatesReversion++;if(!winner){if(!candidates.length)cfg.funnel.noLocalPattern++;else if(!(momentumLong||momentumShort))cfg.funnel.rejectedMomentum++;else if(!hLong&&!hShort&&!strongLocalLong&&!strongLocalShort)cfg.funnel.rejectedHtf++;else cfg.funnel.rejectedScore++;}}
- if(!winner)return wait(entry,['No candidate reached the strict entry-quality conviction score'],score);
- const look=cfg.swingLookback??5,recent=bars.slice(-look),swingLow=Math.min(...recent.map(b=>b.low)),swingHigh=Math.max(...recent.map(b=>b.high)),rawRisk=side==='LONG'?Math.max(entry-swingLow,a*.55):Math.max(swingHigh-entry,a*.55),cap=a*(cfg.maxStructuralRiskAtr??1.35),riskFloor=Math.max(a*(cfg.atrStopMultiple??1.5)*.65,entry*cost*1.75,entry*.0008,a*.55);
- if(rawRisk>cap){if(cfg.funnel)cfg.funnel.rejectedStructuralStop++;return wait(entry,[`Structural stop ${(rawRisk/a).toFixed(2)} ATR exceeds ${(cfg.maxStructuralRiskAtr??1.35).toFixed(2)} ATR ceiling`],score);}
- if(riskFloor>cap){if(cfg.funnel)cfg.funnel.rejectedRiskFloor++;return wait(entry,[`Minimum cost/ATR risk ${(riskFloor/a).toFixed(2)} ATR exceeds ${(cfg.maxStructuralRiskAtr??1.35).toFixed(2)} ATR ceiling`],score);}
- const risk=Math.max(rawRisk,riskFloor),minRR=cfg.minRiskReward??1.5,maxRR=cfg.maxRiskReward??3,ultra=TRADING_CONFIG.ultraScore,rr=cfg.riskReward??clamp(minRR+(maxRR-minRR)*clamp((score-(cfg.minScore??TRADING_CONFIG.minScore))/Math.max(1,ultra-(cfg.minScore??TRADING_CONFIG.minScore)),0,1),minRR,maxRR),targetDistance=risk*rr,pathCapacity=a*(8+28*eff24+8*sep+8*Math.max(0,expansion-1)+5*eff48);
- if(!cfg.skipLegacyPathCapacity&&targetDistance>pathCapacity){if(cfg.funnel)cfg.funnel.rejectedPathCapacity++;return wait(entry,[`${rr.toFixed(1)}R target exceeds measured path capacity`],score);}
+ if(!winner)return wait(entry,['No candidate reached the entry-quality conviction score'],score);
+ const look=cfg.swingLookback??5,recent=bars.slice(-look),swingLow=Math.min(...recent.map(b=>b.low)),swingHigh=Math.max(...recent.map(b=>b.high)),rawRisk=side==='LONG'?Math.max(entry-swingLow,a*.55):Math.max(swingHigh-entry,a*.55);
+ const minStopAtr=cfg.minStopAtr??TRADING_CONFIG.minStopAtr,maxStopAtr=cfg.maxStructuralRiskAtr??TRADING_CONFIG.maxStructuralRiskAtr;
+ if(maxStopAtr<=minStopAtr)throw new Error('Stop bounds inverted: maxStructuralRiskAtr must exceed minStopAtr');
+ const cap=a*maxStopAtr,minRisk=a*minStopAtr;
+ if(rawRisk>cap){if(cfg.funnel)cfg.funnel.rejectedStructuralStop++;return wait(entry,[`Structural stop ${(rawRisk/a).toFixed(2)} ATR exceeds ${(maxStopAtr).toFixed(2)} ATR ceiling`],score);}
+ const risk=Math.max(rawRisk,minRisk),costFraction=(entry*cost)/Math.max(risk,1e-12),maxCostFraction=cfg.maxCostFractionOfRisk??TRADING_CONFIG.maxCostFractionOfRisk;
+ if(costFraction>maxCostFraction){if(cfg.funnel)cfg.funnel.rejectedRiskFloor++;return wait(entry,[`Round-trip cost is ${(costFraction*100).toFixed(0)}% of 1R; exceeds ${Math.round(maxCostFraction*100)}% economic limit`],score);}
+ const minRR=cfg.minRiskReward??1.8,maxRR=cfg.maxRiskReward??4,ultra=TRADING_CONFIG.ultraScore,rr=cfg.riskReward??clamp(minRR+(maxRR-minRR)*clamp((score-(cfg.minScore??TRADING_CONFIG.minScore))/Math.max(1,ultra-(cfg.minScore??TRADING_CONFIG.minScore)),0,1),minRR,maxRR),targetDistance=risk*rr;
+ const pathCapacity=a*(8+28*eff24+8*sep+8*Math.max(0,expansion-1)+5*eff48);
+ if(!cfg.skipLegacyPathCapacity&&targetDistance>pathCapacity){if(cfg.funnel)cfg.funnel.rejectedPathCapacity++;return wait(entry,[`${rr.toFixed(1)}R target exceeds measured local path capacity`],score);}
  const stopLoss=side==='LONG'?entry-risk:entry+risk,takeProfit=side==='LONG'?entry+targetDistance:entry-targetDistance;
- if(cfg.funnel)cfg.funnel.tradesOpened++;
- return{action:side,score:Math.round(clamp(score,0,100)),confidence:Math.round(clamp(score,0,100)),strategy:'Production Regime Breakout v32',entry,stopLoss,takeProfit,riskReward:rr,family,reasons:[family==='trend'?'EMA20 pullback/reclaim':family==='breakout'?'Fresh breakout':family==='compression'?'Compression expansion':'Range RSI/Bollinger reversal',side==='LONG'?'Bullish local regime':'Bearish local regime',hLong||hShort?'Completed-hour confirmation':'Strong local-regime confirmation','Multi-horizon momentum','Real OHLC ATR structural stop','Cost-aware risk distance',`Target ${rr.toFixed(1)}R`,`Score ${Math.round(score)}/100`],pathCapacity};
+ if(!cfg.skipLegacyPathCapacity&&cfg.funnel)cfg.funnel.tradesOpened++;
+ return{action:side,score:Math.round(clamp(score,0,100)),confidence:Math.round(clamp(score,0,100)),strategy:'Production Regime Breakout v32',entry,stopLoss,takeProfit,riskReward:rr,family,pathCapacity,reasons:[family==='trend'?'EMA20 pullback/reclaim':family==='breakout'?'Fresh breakout':family==='compression'?'Compression expansion':'Range RSI/Bollinger reversal',side==='LONG'?'Bullish local regime':'Bearish local regime',hLong||hShort?'Completed-hour confirmation':'Strong local-regime confirmation','Multi-horizon momentum','Real OHLC ATR structural stop','Cost-aware risk distance',`Target ${rr.toFixed(1)}R`,`Score ${Math.round(score)}/100`]};
 }
-export function evaluateResearchStrategy(input:number[]|MarketBar[],config:Partial<StrategyConfig>={}):StrategySignal{return evaluateProductionStrategy(input,{...config,minRiskReward:config.minRiskReward??1.5,maxRiskReward:config.maxRiskReward??3});}
+export function evaluateResearchStrategy(input:number[]|MarketBar[],config:Partial<StrategyConfig>={}):StrategySignal{return evaluateProductionStrategy(input,{...config,minRiskReward:config.minRiskReward??1.8,maxRiskReward:config.maxRiskReward??4});}
 export function evaluateStrategy(input:number[]|MarketBar[],config:Partial<StrategyConfig>={}):StrategySignal{return evaluateProductionStrategy(input,config);}
