@@ -1,33 +1,28 @@
 import { evaluateProductionStrategy as evaluateEntryStrategy, type StrategyConfig, type StrategySignal } from './strategyV32';
 export type { StrategyConfig, StrategySignal } from './strategyV32';
 import type { MarketBar } from './marketData';
+import { TRADING_CONFIG } from './tradingConfig';
 
 /**
- * v35: high-conviction entry qualification followed by extreme-R research
- * targets. The validation gate remains unchanged.
- *
- * v35 deliberately does NOT invent a second stop model. Entry qualification,
- * structural-stop construction, and path-capacity measurement remain the
- * proven v32 model. The research-layer change is the target assigned after
- * an already-qualified entry: 10R by default and 15R only for ultra-score
- * entries. A target is never downgraded when it is infeasible.
+ * v35: qualify the entry with the proven v32 model first, then assign the
+ * research target. v35 never weakens the entry gate just to manufacture a
+ * 10R/15R trade, and never silently downgrades an infeasible target.
  */
 const ENTRY_MIN_R = 1.5;
 const ENTRY_MAX_R = 3;
-const MIN_ENTRY_SCORE = 94;
-const ULTRA_SCORE = 99;
-const RESEARCH_MIN_R = 10;
-const RESEARCH_MAX_R = 15;
+const RESEARCH_MIN_R = TRADING_CONFIG.researchMinRiskReward;
+const RESEARCH_MAX_R = TRADING_CONFIG.researchMaxRiskReward;
 
 export function evaluateProductionStrategy(
   input: number[] | MarketBar[],
   config: Partial<StrategyConfig> = {},
 ): StrategySignal {
-  // Keep v32's original structural-risk geometry intact. v35 is a target
-  // research layer, not a replacement stop model.
+  const minEntryScore = TRADING_CONFIG.minScore;
+  const ultraScore = TRADING_CONFIG.ultraScore;
+
   const entrySignal = evaluateEntryStrategy(input, {
     ...config,
-    minScore: Math.max(MIN_ENTRY_SCORE, config.minScore ?? MIN_ENTRY_SCORE),
+    minScore: Math.max(minEntryScore, config.minScore ?? minEntryScore),
     minRiskReward: ENTRY_MIN_R,
     maxRiskReward: ENTRY_MAX_R,
     riskReward: undefined,
@@ -45,16 +40,21 @@ export function evaluateProductionStrategy(
     };
   }
 
-  // 10R is the default research target. Only the highest-conviction
-  // score tier earns the 15R target; 15R is never silently substituted
-  // for ordinary A+ entries.
-  const targetR = entrySignal.score >= ULTRA_SCORE ? RESEARCH_MAX_R : RESEARCH_MIN_R;
+  const targetR = entrySignal.score >= ultraScore ? RESEARCH_MAX_R : RESEARCH_MIN_R;
   const targetDistance = risk * targetR;
+  const pathCapacity = entrySignal.pathCapacity;
 
-  // Hard feasibility veto: a 10R/15R target must be supported by the same
-  // historical path-capacity measurement used by v32. Never substitute a
-  // smaller target just to create a trade.
-  if (targetDistance > entrySignal.pathCapacity) {
+  // v32's path-capacity metric is measured from the same OHLC/ATR context
+  // used to qualify the entry. Because v35 changes the target after that
+  // qualification, the new target must be checked again here.
+  if (!Number.isFinite(pathCapacity) || targetDistance > pathCapacity) {
+    if (config.funnel) {
+      config.funnel.rejectedPathCapacity++;
+      // v32 increments this bucket before v35 applies its second target
+      // feasibility check. Undo that provisional count so the UI's
+      // "signals opened" value represents actual v35-accepted signals.
+      config.funnel.tradesOpened = Math.max(0, config.funnel.tradesOpened - 1);
+    }
     return {
       ...entrySignal,
       action: 'WAIT',
@@ -63,7 +63,7 @@ export function evaluateProductionStrategy(
       riskReward: 0,
       reasons: [
         ...entrySignal.reasons,
-        `${targetR}R target (${targetDistance.toFixed(2)}) exceeds measured path capacity (${entrySignal.pathCapacity.toFixed(2)})`,
+        `${targetR}R target (${targetDistance.toFixed(2)}) exceeds measured path capacity (${Number.isFinite(pathCapacity) ? pathCapacity.toFixed(2) : 'invalid'})`,
       ],
     };
   }
