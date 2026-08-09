@@ -2,36 +2,14 @@ import { fetchHistoricalCandles, newFunnelCounters, type Candle, type BacktestCo
 export type { BacktestConfig, StrategyResult, ValidationReport, ValidationGate, FoldDiagnostic, FunnelCounters, FamilyPerformance } from './backtestV6';
 import { evaluateProductionStrategy } from './strategy';
 import { TRADING_CONFIG } from './tradingConfig';
+import { runnerProtectedStop } from './runnerProtection';
 
 const MAX_HISTORY_BARS=60000,PRE_OOS=TRADING_CONFIG.preOosFraction,FOLDS=TRADING_CONFIG.folds,LOOKBACK=TRADING_CONFIG.lookback,MIN_FOLD_TRADES=TRADING_CONFIG.minFoldTrades,MIN_TEST_TRADES=TRADING_CONFIG.minTestTrades,MIN_PF=TRADING_CONFIG.minProfitFactor,MAX_DD=TRADING_CONFIG.maxDrawdownPct,MAX_MC_LOSS=TRADING_CONFIG.maxMonteCarloLossProbability,MIN_SCORE=TRADING_CONFIG.minScore;
 const mean=(a:number[])=>a.length?a.reduce((x,y)=>x+y,0)/a.length:0;
-
 function summarize(id:string,returns:number[],initial:number):StrategyResult{const wins=returns.filter(x=>x>0),losses=returns.filter(x=>x<0),gp=wins.reduce((a,b)=>a+b,0),gl=Math.abs(losses.reduce((a,b)=>a+b,0)),pf=gl?gp/gl:0;let equity=initial,peak=initial,dd=0;for(const r of returns){equity*=1+r/100;peak=Math.max(peak,equity);dd=Math.max(dd,(peak-equity)/peak*100);}const ret=(equity/initial-1)*100,wr=returns.length?wins.length/returns.length*100:0,avg=mean(returns),sh=returns.length?Math.sqrt(returns.length)*avg/(Math.sqrt(mean(returns.map(x=>(x-avg)**2)))||1):0;return{id,name:'Production Regime Breakout v35',trades:returns.length,wins:wins.length,losses:losses.length,winRate:wr,profitFactor:pf,netPnl:equity-initial,returnPct:ret,maxDrawdownPct:dd,avgTrade:avg,score:(ret+Math.min(pf,5)*2.5+sh*2+wr/25-dd*.8)*Math.min(1,returns.length/30),tradeReturnsPct:returns,sharpe:sh,sortino:sh,calmar:dd?ret/dd:0,expectancy:avg,turnoverPct:returns.reduce((a,b)=>a+Math.abs(b),0)};}
 function summarizeFamily(returns:number[]):FamilyPerformance{const wins=returns.filter(x=>x>0),losses=returns.filter(x=>x<0),gp=wins.reduce((a,b)=>a+b,0),gl=Math.abs(losses.reduce((a,b)=>a+b,0)),pf=gl?gp/gl:(gp>0?Infinity:0);return{trades:returns.length,wins:wins.length,winRate:returns.length?wins.length/returns.length*100:0,profitFactor:Number.isFinite(pf)?pf:0,returnPct:returns.reduce((a,b)=>a+b,0),avgTrade:mean(returns)};}
 function monte(returns:number[],runs=TRADING_CONFIG.monteCarloRuns){if(!returns.length)return{simulations:runs,probabilityOfLoss:100,medianReturnPct:0,p05ReturnPct:0,p95MaxDrawdownPct:0};let seed=0x7a11>>>0;const rnd=()=>{seed=(1664525*seed+1013904223)>>>0;return seed/4294967296;};const finals:number[]=[],dds:number[]=[];for(let k=0;k<runs;k++){let e=1,p=1,d=0;for(let i=0;i<returns.length;i++){e*=1+returns[Math.floor(rnd()*returns.length)]/100;p=Math.max(p,e);d=Math.max(d,(p-e)/p*100);}finals.push((e-1)*100);dds.push(d);}finals.sort((a,b)=>a-b);dds.sort((a,b)=>a-b);return{simulations:runs,probabilityOfLoss:finals.filter(x=>x<0).length/runs*100,medianReturnPct:finals[Math.floor(runs*.5)]??0,p05ReturnPct:finals[Math.floor(runs*.05)]??0,p95MaxDrawdownPct:dds[Math.floor(runs*.95)]??0};}
-
 interface FamilyTaggedReturn{pct:number;family:string;}
-
-// Runner protection is anchored to the immutable entry-to-target distance.
-// It therefore remains correct after the stop itself has been ratcheted.
-const RUNNER_BREAKEVEN_FRACTION=0.125;
-const RUNNER_COST_BUFFER_FRACTION=0.003;
-const RUNNER_LOCK_FRACTION=0.25;
-const RUNNER_LOCK_KEEP_FRACTION=0.10;
-const RUNNER_TRAIL_START_FRACTION=0.40;
-const RUNNER_TRAIL_GIVEBACK_FRACTION=0.15;
-
-export function runnerProtectedStop(side:1|-1,entry:number,target:number,currentStop:number,barHigh:number,barLow:number):number{
- const distanceToTarget=Math.abs(target-entry);
- if(!(distanceToTarget>0)||![entry,target,currentStop,barHigh,barLow].every(Number.isFinite))return currentStop;
- const favorable=side===1?barHigh-entry:entry-barLow;
- const fraction=favorable/distanceToTarget;
- let desired=currentStop;
- if(fraction>=RUNNER_TRAIL_START_FRACTION)desired=entry+side*(fraction-RUNNER_TRAIL_GIVEBACK_FRACTION)*distanceToTarget;
- else if(fraction>=RUNNER_LOCK_FRACTION)desired=entry+side*RUNNER_LOCK_KEEP_FRACTION*distanceToTarget;
- else if(fraction>=RUNNER_BREAKEVEN_FRACTION)desired=entry+side*RUNNER_COST_BUFFER_FRACTION*distanceToTarget;
- return side===1?Math.max(currentStop,desired):Math.min(currentStop,desired);
-}
 
 function simulate(c:Candle[],cfg:BacktestConfig,start:number,end:number,funnel?:FunnelCounters,familyReturns?:FamilyTaggedReturn[]):StrategyResult{
  let equity=cfg.initialCapital;const returns:number[]=[];let open:null|{side:1|-1;entry:number;stop:number;target:number;qty:number;bars:number;family:string}=null;const fee=cfg.feeBps/10000,slip=cfg.slippageBps/10000;
@@ -41,8 +19,8 @@ function simulate(c:Candle[],cfg:BacktestConfig,start:number,end:number,funnel?:
   const b=c[i],hist=c.slice(Math.max(0,i-LOOKBACK+1),i+1);let closed=false;
   if(open){
    open.bars++;
-   // Exit first using the stop that existed entering this bar. A newly
-   // ratcheted stop only becomes active on the next bar, avoiding any
+   // Evaluate exits against the stop/target active at the start of the bar.
+   // A newly ratcheted stop becomes active on the next bar, avoiding any
    // favorable intrabar ordering assumption from OHLC data.
    const stop=open.side===1?b.low<=open.stop:b.high>=open.stop,tp=open.side===1?b.high>=open.target:b.low<=open.target,timeout=open.bars>=cfg.maxBarsInTrade;
    if(stop||tp||timeout){const raw=stop?open.stop:tp?open.target:b.close,exit=raw*(1-open.side*slip),gross=open.side*(exit-open.entry)*open.qty,fees=(Math.abs(open.entry*open.qty)+Math.abs(exit*open.qty))*fee;record(gross-fees,open.family);open=null;closed=true;}
@@ -71,5 +49,5 @@ export async function runValidation(symbol='BTCUSDT',interval='5m',cfg:Partial<B
  if(test&&test.trades<MIN_TEST_TRADES)reasons.push(`OOS trades ${test.trades} < ${MIN_TEST_TRADES}.`);if(test&&test.profitFactor<MIN_PF)reasons.push(`OOS PF ${test.profitFactor.toFixed(2)} < ${MIN_PF}.`);if(test&&test.returnPct<=0)reasons.push(`OOS return ${test.returnPct.toFixed(2)}% is not positive.`);if(test&&test.maxDrawdownPct>MAX_DD)reasons.push(`OOS drawdown ${test.maxDrawdownPct.toFixed(2)}% > ${MAX_DD}%.`);if(test&&mc.probabilityOfLoss>MAX_MC_LOSS)reasons.push(`Monte Carlo loss probability ${mc.probabilityOfLoss.toFixed(1)}% > ${MAX_MC_LOSS}%.`);
  const step=interval==='1h'?3600000:interval==='4h'?14400000:interval==='15m'?900000:interval==='5m'?300000:60000;const gate:ValidationGate={status:reasons.length?'REJECTED':'VALIDATED',reasons,minimumTestTrades:MIN_TEST_TRADES,minimumProfitFactor:MIN_PF,minimumTestReturnPct:0,maximumTestDrawdownPct:MAX_DD,maximumMonteCarloLossProbability:MAX_MC_LOSS};
  const familyPerformance:Record<string,FamilyPerformance>={};for(const fam of ['trend','breakout','retest','compression','reversion'])familyPerformance[fam]=summarizeFamily(familyReturns.filter(x=>x.family===fam).map(x=>x.pct));
- return{symbol,interval,candles:n,dataQuality:{startTime:candles[0].openTime,endTime:candles.at(-1)!.openTime,durationDays:(candles.at(-1)!.openTime-candles[0].openTime)/864e5,expectedIntervalMinutes:step/60000,gaps:candles.slice(1).filter((x,i)=>x.openTime-candles[i].openTime!==step).length,duplicateTimestamps:n-new Set(candles.map(x=>x.openTime)).size},costs:{feeBps:config.feeBps,slippageBps:config.slippageBps,roundTripPct:2*(config.feeBps+config.slippageBps)/10000},strategies:[validation],walkForward:{trainBars:foldSize,validationBars:foldSize,testBars:n-pre,selectedStrategy:allThree?'Production Regime Breakout v35':'No eligible strategy',validation:allThree?validation:null,test},foldDiagnostics,monteCarlo:mc,gate,generatedAt:new Date().toISOString(),research:{asOf:new Date().toISOString(),dataWindowBars:n,selectionMethod:'A+ v35 uses the proven v32 entry/risk qualification at 1.5R-3R, then assigns 10R by default and 15R only for score >=99; runner protection ratchets risk after favorable movement; three non-overlapping pre-OOS folds; untouched 30% OOS; realistic fees/slippage; no gate weakening or OOS tuning.',coverage:['EMA20 pullback/reclaim with decision-candle confirmation','fresh breakout','compression expansion','range RSI/Bollinger reversal','completed-hour confirmation when available','strong local-regime fallback for trend evidence','real OHLC ATR','shared structural stop ceiling','cost-aware position sizing','slippage-adjusted stop/target parity','entry qualification separated from 10R/15R target research','runner protection with monotonic stop ratchet','strict 3-fold stability gate','untouched 30% OOS','5,000-run Monte Carlo']},signalFunnel:funnel,familyPerformance};
+ return{symbol,interval,candles:n,dataQuality:{startTime:candles[0].openTime,endTime:candles.at(-1)!.openTime,durationDays:(candles.at(-1)!.openTime-candles[0].openTime)/864e5,expectedIntervalMinutes:step/60000,gaps:candles.slice(1).filter((x,i)=>x.openTime-candles[i].openTime!==step).length,duplicateTimestamps:n-new Set(candles.map(x=>x.openTime)).size},costs:{feeBps:config.feeBps,slippageBps:config.slippageBps,roundTripPct:2*(config.feeBps+config.slippageBps)/10000},strategies:[validation],walkForward:{trainBars:foldSize,validationBars:foldSize,testBars:n-pre,selectedStrategy:allThree?'Production Regime Breakout v35':'No eligible strategy',validation:allThree?validation:null,test},foldDiagnostics,monteCarlo:mc,gate,generatedAt:new Date().toISOString(),research:{asOf:new Date().toISOString(),dataWindowBars:n,selectionMethod:'A+ v35 uses the proven v32 entry/risk qualification at 1.5R-3R, then assigns 10R by default and 15R only for score >=99; runner protection uses the shared target-anchored monotonic stop ratchet in both validation and paper trading; three non-overlapping pre-OOS folds; untouched 30% OOS; realistic fees/slippage; no gate weakening or OOS tuning.',coverage:['EMA20 pullback/reclaim with decision-candle confirmation','fresh breakout','compression expansion','range RSI/Bollinger reversal','completed-hour confirmation when available','strong local-regime fallback for trend evidence','real OHLC ATR','shared structural stop ceiling','cost-aware position sizing','slippage-adjusted stop/target parity','entry qualification separated from 10R/15R target research','shared runner protection with monotonic stop ratchet','strict 3-fold stability gate','untouched 30% OOS','5,000-run Monte Carlo']},signalFunnel:funnel,familyPerformance};
 }
