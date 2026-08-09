@@ -30,7 +30,7 @@ const percentile = (v: number[], q: number) => {
   const s = [...v].sort((a, b) => a - b);
   const x = (s.length - 1) * Math.max(0, Math.min(1, q));
   const lo = Math.floor(x), hi = Math.ceil(x);
-  return lo === hi ? s[lo] : s[lo] + (s[hi] - s[lo]) * (x - lo);
+  return lo === hi ? s[lo] : s[lo] + (s[hi] - s[lo]) * (x - s[lo]);
 };
 
 const atrAt = (bars: MarketBar[], endExclusive: number, period = 20) => {
@@ -75,10 +75,6 @@ function independentPathCapacity(
   if (!input.length || typeof input[0] === 'number' || !(currentAtr > 0) || !(currentRisk > 0) || horizonBars < 1) return unavailable;
 
   const bars = input as MarketBar[];
-  // Every sample needs a complete horizonBars forward window. Requiring
-  // MIN_INDEPENDENT_SAMPLES non-overlapping windows makes the history
-  // requirement scale with the actual holding horizon instead of a fixed
-  // lookback that would create heavily overlapping pseudo-samples.
   const requiredLookback = MIN_INDEPENDENT_SAMPLES * horizonBars;
   if (bars.length < horizonBars + requiredLookback + 21) return unavailable;
 
@@ -95,8 +91,7 @@ function independentPathCapacity(
   let samples = 0;
 
   // Stride by the complete forward horizon. Adjacent samples therefore never
-  // share a future evaluation bar. With a 1440-bar 5m horizon this produces
-  // 20 genuinely non-overlapping episodes rather than 240 near-duplicates.
+  // share a future evaluation bar.
   for (let i = last - 1; i >= first; i -= horizonBars) {
     const atr = atrAt(completed, i + 1);
     if (!(atr > 0) || !Number.isFinite(atr)) continue;
@@ -151,12 +146,16 @@ export function evaluateProductionStrategy(
 
   // v32 owns entry quality and structural risk. It is deliberately evaluated
   // at its native 1.5R-3R research-neutral range; v35 owns the 10R/15R test.
+  // Do not apply v32's legacy heuristic path-capacity gate here: v35's
+  // independent, non-overlapping historical capacity test is the authoritative
+  // extreme-R feasibility check.
   const entrySignal = evaluateEntryStrategy(input, {
     ...config,
     minScore: Math.max(minEntryScore, config.minScore ?? minEntryScore),
     minRiskReward: ENTRY_MIN_R,
     maxRiskReward: ENTRY_MAX_R,
     riskReward: undefined,
+    skipLegacyPathCapacity: true,
   });
 
   if (entrySignal.action === 'WAIT') return entrySignal;
@@ -174,10 +173,6 @@ export function evaluateProductionStrategy(
   const targetR = entrySignal.score >= ultraScore ? RESEARCH_MAX_R : RESEARCH_MIN_R;
   const targetDistance = risk * targetR;
 
-  // The historical hit-rate requirement is derived from the configured PF
-  // gate and actual round-trip cost expressed in units of the setup's risk.
-  // It is not a tuned win-rate constant and is never allowed to weaken the
-  // validation gate.
   const roundTripCost = 2 * ((config.feeBps ?? TRADING_CONFIG.feeBps) + (config.slippageBps ?? TRADING_CONFIG.slippageBps)) / 10000;
   const costInR = risk > 0 ? roundTripCost * entrySignal.entry / risk : Infinity;
   const pfFloor = TRADING_CONFIG.minProfitFactor;
@@ -189,10 +184,6 @@ export function evaluateProductionStrategy(
   const capacityBars = extendedConfig.capacityBars ?? input;
   const currentAtr = independentCurrentAtr(capacityBars);
   const horizonBars = Math.max(1, Math.floor(config.capacityHorizonBars ?? DEFAULT_CAPACITY_HORIZON));
-  // If the economic hurdle requires H% of paths to reach the target, the
-  // corresponding MFE quantile is 1-H. This replaces the arbitrary fixed
-  // 80th-percentile excursion hurdle while leaving the independent
-  // target-before-stop rate test fully intact.
   const capacityQuantile = 1 - requiredHitRate;
   const evidence = independentPathCapacity(capacityBars, entrySignal.action, currentAtr, risk, targetR, horizonBars, capacityQuantile);
 
