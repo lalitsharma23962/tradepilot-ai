@@ -14,11 +14,12 @@ export async function fetchMarketBars(symbol='BTCUSDT',interval='5m',limit=240):
   if(!res.ok)throw new Error(`Live market data request failed (${res.status}).`);
   const body=await res.json() as {ok?:boolean;error?:string;klines?:unknown[][]};
   if(!body.ok||!Array.isArray(body.klines))throw new Error(body.error??'Live market data response was invalid.');
-  const batch=normalize(body.klines).filter(b=>b.openTime+intervalMs(interval)<=Date.now());
+  const rawBatch=body.klines;
+  const batch=normalize(rawBatch).filter(b=>b.openTime+intervalMs(interval)<=Date.now());
   if(!batch.length)break;
   rows.unshift(...batch);
   const earliest=batch[0].openTime;
-  if(!Number.isFinite(earliest)||batch.length<batchLimit)break;
+  if(!Number.isFinite(earliest)||rawBatch.length<batchLimit)break;
   endTime=earliest-1;
  }
  const bars=normalize(rows).slice(-target);
