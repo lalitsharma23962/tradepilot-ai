@@ -17,7 +17,7 @@ export async function fetchMarketBars(symbol='BTCUSDT',interval='5m',limit=240):
   const rawBatch=body.klines;
   const batch=normalize(rawBatch).filter(b=>b.openTime+intervalMs(interval)<=Date.now());
   if(!batch.length)break;
-  rows.unshift(...batch);
+  rows.unshift(...rawBatch.filter(r=>Number(r?.[0])+intervalMs(interval)<=Date.now()));
   const earliest=batch[0].openTime;
   if(!Number.isFinite(earliest)||rawBatch.length<batchLimit)break;
   endTime=earliest-1;
