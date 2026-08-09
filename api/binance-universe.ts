@@ -1,4 +1,4 @@
-// Validation-fix deployment marker: deterministic completed-candle history paging; 60k ceiling.
+// Validation-fix deployment marker: deterministic completed-candle history paging; 100k ceiling.
 const BINANCE_BASE='https://data-api.binance.vision/api/v3';
 
 function respond(res:any,body:unknown,status=200){res.status(status).setHeader('content-type','application/json').setHeader('cache-control','no-store').send(JSON.stringify(body));}
@@ -27,7 +27,7 @@ export default async function handler(req:any,res:any){
         const endTime=Number.isFinite(endRaw)&&endRaw>0?endRaw:undefined;
         return respond(res,{ok:true,klines:await fetchKlines(symbol,interval,limit,startTime,endTime)});
       }
-      const total=Math.min(60000,Math.max(20000,Number(req.query?.total??20000)));
+      const total=Math.min(100000,Math.max(20000,Number(req.query?.total??20000)));
       const ms=intervalMs(interval);
       const rows:unknown[][]=[];
       // We need one extra raw candle because the current open candle is deliberately
