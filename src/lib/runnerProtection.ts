@@ -9,7 +9,13 @@ export const RUNNER_LOCK_KEEP_FRACTION = 0.10;
 export const RUNNER_TRAIL_START_FRACTION = 0.40;
 export const RUNNER_TRAIL_GIVEBACK_FRACTION = 0.15;
 
-/** Monotonically ratchet the stop using immutable entry-to-target progress. */
+/**
+ * Monotonically ratchets the stop after favorable movement.
+ *
+ * The calculation is anchored to entry -> target, not the mutable stop,
+ * so moving the stop cannot corrupt the definition of progress.
+ * The returned stop can only move in the profitable direction.
+ */
 export function runnerProtectedStop(
   side: RunnerSide,
   entry: number,
@@ -19,12 +25,21 @@ export function runnerProtectedStop(
   barLow: number,
 ): number {
   const distanceToTarget = Math.abs(target - entry);
-  if (!(distanceToTarget > 0) || ![entry, target, currentStop, barHigh, barLow].every(Number.isFinite)) return currentStop;
+  if (!(distanceToTarget > 0) || ![entry, target, currentStop, barHigh, barLow].every(Number.isFinite)) {
+    return currentStop;
+  }
+
   const favorable = side === 1 ? barHigh - entry : entry - barLow;
   const fraction = favorable / distanceToTarget;
   let desired = currentStop;
-  if (fraction >= RUNNER_TRAIL_START_FRACTION) desired = entry + side * (fraction - RUNNER_TRAIL_GIVEBACK_FRACTION) * distanceToTarget;
-  else if (fraction >= RUNNER_LOCK_FRACTION) desired = entry + side * RUNNER_LOCK_KEEP_FRACTION * distanceToTarget;
-  else if (fraction >= RUNNER_BREAKEVEN_FRACTION) desired = entry + side * RUNNER_COST_BUFFER_FRACTION * distanceToTarget;
+
+  if (fraction >= RUNNER_TRAIL_START_FRACTION) {
+    desired = entry + side * (fraction - RUNNER_TRAIL_GIVEBACK_FRACTION) * distanceToTarget;
+  } else if (fraction >= RUNNER_LOCK_FRACTION) {
+    desired = entry + side * RUNNER_LOCK_KEEP_FRACTION * distanceToTarget;
+  } else if (fraction >= RUNNER_BREAKEVEN_FRACTION) {
+    desired = entry + side * RUNNER_COST_BUFFER_FRACTION * distanceToTarget;
+  }
+
   return side === 1 ? Math.max(currentStop, desired) : Math.min(currentStop, desired);
 }
