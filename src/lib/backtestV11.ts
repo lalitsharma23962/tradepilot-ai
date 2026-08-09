@@ -10,8 +10,7 @@ const CAPACITY_CONTEXT=LOOKBACK+MAX_CAPACITY_HORIZON+260;
 const mean=(a:number[])=>a.length?a.reduce((x,y)=>x+y,0)/a.length:0;
 function summarize(id:string,returns:number[],initial:number):StrategyResult{const wins=returns.filter(x=>x>0),losses=returns.filter(x=>x<0),gp=wins.reduce((a,b)=>a+b,0),gl=Math.abs(losses.reduce((a,b)=>a+b,0)),pf=gl?gp/gl:0;let equity=initial,peak=initial,dd=0;for(const r of returns){equity*=1+r/100;peak=Math.max(peak,equity);dd=Math.max(dd,(peak-equity)/peak*100);}const ret=(equity/initial-1)*100,wr=returns.length?wins.length/returns.length*100:0,avg=mean(returns),sh=returns.length?Math.sqrt(returns.length)*avg/(Math.sqrt(mean(returns.map(x=>(x-avg)**2)))||1):0;return{id,name:'Production Regime Breakout v35',trades:returns.length,wins:wins.length,losses:losses.length,winRate:wr,profitFactor:pf,netPnl:equity-initial,returnPct:ret,maxDrawdownPct:dd,avgTrade:avg,score:(ret+Math.min(pf,5)*2.5+sh*2+wr/25-dd*.8)*Math.min(1,returns.length/30),tradeReturnsPct:returns,sharpe:sh,sortino:sh,calmar:dd?ret/dd:0,expectancy:avg,turnoverPct:returns.reduce((a,b)=>a+Math.abs(b),0)};}
 function summarizeFamily(returns:number[]):FamilyPerformance{const wins=returns.filter(x=>x>0),losses=returns.filter(x=>x<0),gp=wins.reduce((a,b)=>a+b,0),gl=Math.abs(losses.reduce((a,b)=>a+b,0)),pf=gl?gp/gl:(gp>0?Infinity:0);return{trades:returns.length,wins:wins.length,winRate:returns.length?wins.length/returns.length*100:0,profitFactor:Number.isFinite(pf)?pf:0,returnPct:returns.reduce((a,b)=>a+b,0),avgTrade:mean(returns)};}
-const cloneFunnel=():FunnelCounters=>newFunnelCounters();
-
+function monte(returns:number[],runs=TRADING_CONFIG.monteCarloRuns){if(!returns.length)return{simulations:runs,probabilityOfLoss:100,medianReturnPct:0,p05ReturnPct:0,p95MaxDrawdownPct:0};let seed=0x7a11>>>0;const rnd=()=>{seed=(1664525*seed+1013904223)>>>0;return seed/4294967296;};const finals:number[]=[],dds:number[]=[];for(let k=0;k<runs;k++){let e=1,p=1,d=0;for(let i=0;i<returns.length;i++){e*=1+returns[Math.floor(rnd()*returns.length)]/100;p=Math.max(p,e);d=Math.max(d,(p-e)/p*100);}finals.push((e-1)*100);dds.push(d);}finals.sort((a,b)=>a-b);dds.sort((a,b)=>a-b);return{simulations:runs,probabilityOfLoss:finals.filter(x=>x<0).length/runs*100,medianReturnPct:finals[Math.floor(runs*.5)]??0,p05ReturnPct:finals[Math.floor(runs*.05)]??0,p95MaxDrawdownPct:dds[Math.floor(runs*.95)]??0};}
 interface FamilyTaggedReturn{pct:number;family:string;}
 
 function simulate(c:Candle[],cfg:BacktestConfig,start:number,end:number,funnel?:FunnelCounters,familyReturns?:FamilyTaggedReturn[]):StrategyResult{
@@ -27,15 +26,11 @@ function simulate(c:Candle[],cfg:BacktestConfig,start:number,end:number,funnel?:
    else open.stop=runnerProtectedStop(open.side,open.entry,open.target,open.stop,b.high,b.low);
   }
   if(!open&&!closed&&i<end-1){
-   // IMPORTANT: pass the same funnel object through the strategy call. The
-   // strategy owns the rejection counters; omitting this argument makes the
-   // validation UI report zeros even while the exact same simulation opens
-   // trades. This was the source of the 23-trades/0-bars contradiction.
    const signal=evaluateProductionStrategy(hist,{minScore:MIN_SCORE,minRiskReward:TRADING_CONFIG.researchMinRiskReward,maxRiskReward:TRADING_CONFIG.researchMaxRiskReward,lookback:LOOKBACK,feeBps:cfg.feeBps,slippageBps:cfg.slippageBps,maxStructuralRiskAtr:TRADING_CONFIG.maxStructuralRiskAtr,swingLookback:TRADING_CONFIG.swingLookback,capacityHorizonBars:cfg.maxBarsInTrade,capacityBars:hist,funnel} as any);
    if(signal.action!=='WAIT'){
     const side=signal.action==='LONG'?1:-1,entry=signal.entry*(1+side*slip),signalRisk=Math.abs(signal.entry-signal.stopLoss),rr=signal.riskReward,risk=signalRisk,stop=entry-side*risk,target=entry+side*risk*rr;
     const riskBudget=Math.max(equity,0)*cfg.riskPerTradePct/100,maxNotional=Math.max(equity,0)*cfg.maxPositionPct/100*Math.max(1,cfg.leverage),q=Math.min(riskBudget/Math.max(risk,entry*.0008),maxNotional/entry);
-    if(q>0&&Number.isFinite(risk)&&risk>0&&Number.isFinite(rr)&&rr>0&&Number.isFinite(target)){open={side,entry,stop,target,qty:q,bars:0,family:signal.family};if(funnel)funnel.tradesOpened++;}
+    if(q>0&&Number.isFinite(risk)&&risk>0&&Number.isFinite(rr)&&rr>0&&Number.isFinite(target))open={side,entry,stop,target,qty:q,bars:0,family:signal.family};
    }
   }
  }
