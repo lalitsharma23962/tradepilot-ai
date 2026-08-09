@@ -48,7 +48,13 @@ export function evaluateProductionStrategy(
   // used to qualify the entry. Because v35 changes the target after that
   // qualification, the new target must be checked again here.
   if (!Number.isFinite(pathCapacity) || targetDistance > pathCapacity) {
-    if (config.funnel) config.funnel.rejectedPathCapacity++;
+    if (config.funnel) {
+      config.funnel.rejectedPathCapacity++;
+      // v32 increments this bucket before v35 applies its second target
+      // feasibility check. Undo that provisional count so the UI's
+      // "signals opened" value represents actual v35-accepted signals.
+      config.funnel.tradesOpened = Math.max(0, config.funnel.tradesOpened - 1);
+    }
     return {
       ...entrySignal,
       action: 'WAIT',
