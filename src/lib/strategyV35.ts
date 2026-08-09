@@ -33,8 +33,8 @@ const atrAt = (bars: MarketBar[], endExclusive: number, period = 20) => {
 /**
  * Historical directional excursion. Samples use only bars strictly after each
  * historical decision point. The current signal's score features are never
- * used. `capacityBars` must contain enough completed history for the requested
- * horizon; callers use the same maximum holding horizon as the execution layer.
+ * used. `capacityBars` is an internal v35 extension and must contain enough
+ * completed history for the requested execution horizon.
  */
 function independentPathCapacity(
   input: number[] | MarketBar[],
@@ -76,6 +76,9 @@ export function evaluateProductionStrategy(
 ): StrategySignal {
   const minEntryScore = TRADING_CONFIG.minScore;
   const ultraScore = TRADING_CONFIG.ultraScore;
+  const extendedConfig = config as Partial<StrategyConfig> & {
+    capacityBars?: MarketBar[];
+  };
 
   // v32 continues to evaluate entry quality on its configured 720-bar window;
   // v35 may receive a larger context window solely for independent capacity.
@@ -101,16 +104,13 @@ export function evaluateProductionStrategy(
 
   const targetR = entrySignal.score >= ultraScore ? RESEARCH_MAX_R : RESEARCH_MIN_R;
   const targetDistance = risk * targetR;
-  const capacityBars = config.capacityBars ?? input;
+  const capacityBars = extendedConfig.capacityBars ?? input;
   const currentAtr = independentCurrentAtr(capacityBars);
   const horizonBars = Math.max(1, Math.floor(config.capacityHorizonBars ?? DEFAULT_CAPACITY_HORIZON));
   const independentCapacity = independentPathCapacity(capacityBars, entrySignal.action, currentAtr, horizonBars);
 
   if (!Number.isFinite(independentCapacity) || independentCapacity <= 0 || targetDistance > independentCapacity) {
-    if (config.funnel) {
-      config.funnel.rejectedPathCapacity++;
-      config.funnel.tradesOpened = Math.max(0, config.funnel.tradesOpened - 1);
-    }
+    if (config.funnel) config.funnel.rejectedPathCapacity++;
     return {
       ...entrySignal,
       action: 'WAIT',
