@@ -4,7 +4,7 @@ import type { MarketBar } from './marketData';
 import type { FunnelCounters } from './backtestV6';
 
 export interface StrategySignal { action: Side|'WAIT'; score:number; confidence:number; strategy:string; entry:number; stopLoss:number; takeProfit:number; riskReward:number; family:string; reasons:string[]; pathCapacity:number; }
-export interface StrategyConfig { minScore:number; minRiskReward:number; maxRiskReward:number; atrStopMultiple:number; lookback:number; riskPerTradePct?:number; strategyLimit?:number; feeBps?:number; slippageBps?:number; riskReward?:number; maxStructuralRiskAtr?:number; swingLookback?:number; capacityHorizonBars?:number; funnel?:FunnelCounters; }
+export interface StrategyConfig { minScore:number; minRiskReward:number; maxRiskReward:number; atrStopMultiple:number; lookback:number; riskPerTradePct?:number; strategyLimit?:number; feeBps?:number; slippageBps?:number; riskReward?:number; maxStructuralRiskAtr?:number; swingLookback?:number; capacityHorizonBars?:number; skipLegacyPathCapacity?:boolean; funnel?:FunnelCounters; }
 const DEFAULT_CONFIG:StrategyConfig={minScore:TRADING_CONFIG.minScore,minRiskReward:TRADING_CONFIG.productionMinRiskReward,maxRiskReward:TRADING_CONFIG.productionMaxRiskReward,atrStopMultiple:TRADING_CONFIG.atrStopMultiple,lookback:TRADING_CONFIG.lookback,feeBps:TRADING_CONFIG.feeBps,slippageBps:TRADING_CONFIG.slippageBps,maxStructuralRiskAtr:TRADING_CONFIG.maxStructuralRiskAtr,swingLookback:TRADING_CONFIG.swingLookback};
 const mean=(x:number[])=>x.length?x.reduce((a,b)=>a+b,0)/x.length:0;
 const std=(x:number[])=>{const m=mean(x);return x.length>1?Math.sqrt(mean(x.map(v=>(v-m)**2))):0;};
@@ -28,17 +28,16 @@ export function evaluateProductionStrategy(input:number[]|MarketBar[],config:Par
  const s12=slope(p.slice(-12))/entry,s24=slope(p.slice(-24))/entry,s48=slope(p.slice(-48))/entry,eff24=efficiency(p.slice(-24)),eff48=efficiency(p.slice(-48));
  const sep=Math.abs(e20-e50)/Math.max(a,entry*1e-6),expansion=aSlow>0?aFast/aSlow:1,vol=a/entry,cost=2*((cfg.feeBps??10)+(cfg.slippageBps??2))/10000;
  const up=e20>e50&&e50>e100,down=e20<e50&&e50<e100,rangeHigh=Math.max(...p.slice(-21,-1)),rangeLow=Math.min(...p.slice(-21,-1));
- const momentumLong=s12>Math.max(.00001,vol*.0035)&&s24>0&&s48>0,momentumShort=s12<-Math.max(.00001,vol*.0035)&&s24<0&&s48<0;
+ // Keep the short-term directional impulse strict, but do not require both longer slopes to agree. The 94+ score gate and downstream family rules remain the primary conviction filters.
+ const momentumLong=s12>Math.max(.00001,vol*.0035)&&(s24>0||s48>0)&&(eff24>=.12||eff48>=.10),momentumShort=s12<-Math.max(.00001,vol*.0035)&&(s24<0||s48<0)&&(eff24>=.12||eff48>=.10);
  const longConsistency=consistency(p.slice(-15),1),shortConsistency=consistency(p.slice(-15),-1),hourly=completedHourly(bars),hp=hourly.map(b=>b.close),h20=ema(hp,20),h40=ema(hp,40),h50=ema(hp,50);
  const hS12=hp.length>=12?slope(hp.slice(-12))/Math.max(entry,1):0,hS24=hp.length>=24?slope(hp.slice(-24))/Math.max(entry,1):0,hEff24=efficiency(hp.slice(-24));
  const hLong=hourly.length>=50?h20>h40&&h40>h50&&hS12>0&&hS24>=-0.000001&&hEff24>=.08:false,hShort=hourly.length>=50?h20<h40&&h40<h50&&hS12<0&&hS24<=0.000001&&hEff24>=.08:false;
- // Aggregate local regime evidence instead of requiring every secondary feature.
- // The directional core remains mandatory; one secondary feature may be imperfect.
- // Downstream family rules and the 94+ conviction gate remain unchanged.
+ // Aggregate local regime evidence. A strong directional stack plus 3 of 5 secondary features is enough to classify the local regime; entry conviction is still enforced below at 94+.
  const localLongEvidence=(up?1:0)+(s24>0?1:0)+(s48>0?1:0)+(eff24>=.18?1:0)+(eff48>=.12?1:0)+(longConsistency>=.48?1:0)+(sep>=.03?1:0);
  const localShortEvidence=(down?1:0)+(s24<0?1:0)+(s48<0?1:0)+(eff24>=.18?1:0)+(eff48>=.12?1:0)+(shortConsistency>=.48?1:0)+(sep>=.03?1:0);
- const strongLocalLong=up&&s24>0&&s48>0&&localLongEvidence>=5;
- const strongLocalShort=down&&s24<0&&s48<0&&localShortEvidence>=5;
+ const strongLocalLong=up&&(s24>0||s48>0)&&localLongEvidence>=5;
+ const strongLocalShort=down&&(s24<0||s48<0)&&localShortEvidence>=5;
  const regimeLong=hLong||strongLocalLong,regimeShort=hShort||strongLocalShort;
  const lastBar=bars.at(-1)!,prevBar=bars.at(-2)!,lastRange=Math.max(lastBar.high-lastBar.low,entry*1e-8),bodyRatio=Math.abs(lastBar.close-lastBar.open)/lastRange,closeLocation=(lastBar.close-lastBar.low)/lastRange;
  const barLong=lastBar.close>lastBar.open&&lastBar.close>=prevBar.close&&bodyRatio>=.25&&closeLocation>=.60,barShort=lastBar.close<lastBar.open&&lastBar.close<=prevBar.close&&bodyRatio>=.25&&closeLocation<=.40;
@@ -73,7 +72,7 @@ export function evaluateProductionStrategy(input:number[]|MarketBar[],config:Par
  if(rawRisk>cap){if(cfg.funnel)cfg.funnel.rejectedStructuralStop++;return wait(entry,[`Structural stop ${(rawRisk/a).toFixed(2)} ATR exceeds ${(cfg.maxStructuralRiskAtr??1.35).toFixed(2)} ATR ceiling`],score);}
  if(riskFloor>cap){if(cfg.funnel)cfg.funnel.rejectedRiskFloor++;return wait(entry,[`Minimum cost/ATR risk ${(riskFloor/a).toFixed(2)} ATR exceeds ${(cfg.maxStructuralRiskAtr??1.35).toFixed(2)} ATR ceiling`],score);}
  const risk=Math.max(rawRisk,riskFloor),minRR=cfg.minRiskReward??1.5,maxRR=cfg.maxRiskReward??3,ultra=TRADING_CONFIG.ultraScore,rr=cfg.riskReward??clamp(minRR+(maxRR-minRR)*clamp((score-(cfg.minScore??TRADING_CONFIG.minScore))/Math.max(1,ultra-(cfg.minScore??TRADING_CONFIG.minScore)),0,1),minRR,maxRR),targetDistance=risk*rr,pathCapacity=a*(8+28*eff24+8*sep+8*Math.max(0,expansion-1)+5*eff48);
- if(targetDistance>pathCapacity){if(cfg.funnel)cfg.funnel.rejectedPathCapacity++;return wait(entry,[`${rr.toFixed(1)}R target exceeds measured path capacity`],score);}
+ if(!cfg.skipLegacyPathCapacity&&targetDistance>pathCapacity){if(cfg.funnel)cfg.funnel.rejectedPathCapacity++;return wait(entry,[`${rr.toFixed(1)}R target exceeds measured path capacity`],score);}
  const stopLoss=side==='LONG'?entry-risk:entry+risk,takeProfit=side==='LONG'?entry+targetDistance:entry-targetDistance;
  if(cfg.funnel)cfg.funnel.tradesOpened++;
  return{action:side,score:Math.round(clamp(score,0,100)),confidence:Math.round(clamp(score,0,100)),strategy:'Production Regime Breakout v32',entry,stopLoss,takeProfit,riskReward:rr,family,reasons:[family==='trend'?'EMA20 pullback/reclaim':family==='breakout'?'Fresh breakout':family==='compression'?'Compression expansion':'Range RSI/Bollinger reversal',side==='LONG'?'Bullish local regime':'Bearish local regime',hLong||hShort?'Completed-hour confirmation':'Strong local-regime confirmation','Multi-horizon momentum','Real OHLC ATR structural stop','Cost-aware risk distance',`Target ${rr.toFixed(1)}R`,`Score ${Math.round(score)}/100`],pathCapacity};
