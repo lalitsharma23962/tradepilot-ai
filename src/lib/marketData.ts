@@ -1,9 +1,10 @@
 export interface MarketBar{openTime:number;open:number;high:number;low:number;close:number;volume:number;}
 const CACHE_MS=2500;
+const MAX_LIVE_BARS=50000;
 const cache=new Map<string,{at:number;bars:MarketBar[]}>();
 function normalize(rows:unknown[][]):MarketBar[]{const seen=new Set<number>();return rows.map(r=>({openTime:Number(r?.[0]),open:Number(r?.[1]),high:Number(r?.[2]),low:Number(r?.[3]),close:Number(r?.[4]),volume:Number(r?.[5])})).filter(x=>[x.openTime,x.open,x.high,x.low,x.close,x.volume].every(Number.isFinite)&&x.open>0&&x.high>0&&x.low>0&&x.close>0&&!seen.has(x.openTime)&&seen.add(x.openTime)).sort((a,b)=>a.openTime-b.openTime);}
 export async function fetchMarketBars(symbol='BTCUSDT',interval='5m',limit=240):Promise<MarketBar[]>{
- const target=Math.min(5000,Math.max(50,limit)),key=`${symbol}:${interval}:${target}`,old=cache.get(key);
+ const target=Math.min(MAX_LIVE_BARS,Math.max(50,limit)),key=`${symbol}:${interval}:${target}`,old=cache.get(key);
  if(old&&Date.now()-old.at<CACHE_MS)return old.bars;
  const rows:unknown[][]=[];let endTime:number|undefined;
  while(rows.length<target){
