@@ -1,14 +1,16 @@
-// Validation-fix deployment marker: deterministic completed-candle history paging; 100k ceiling.
+// v38 market-data gateway: validate Binance Spot intervals before forwarding requests.
 const BINANCE_BASE='https://data-api.binance.vision/api/v3';
+const SUPPORTED_INTERVALS=new Set(['1s','1m','3m','5m','15m','30m','1h','2h','4h','6h','8h','12h','1d','3d','1w','1M']);
 
 function respond(res:any,body:unknown,status=200){res.status(status).setHeader('content-type','application/json').setHeader('cache-control','no-store').send(JSON.stringify(body));}
 function intervalMs(interval:string){const m=interval.match(/^(\d+)([mhdw])$/i);if(!m)throw new Error(`Unsupported interval: ${interval}`);const n=Number(m[1]),u=m[2].toLowerCase();return n*(u==='m'?60000:u==='h'?3600000:u==='d'?86400000:604800000);}
 async function fetchKlines(symbol:string,interval:string,limit:number,startTime?:number,endTime?:number){
+  if(!SUPPORTED_INTERVALS.has(interval))throw new Error(`Unsupported Binance Spot interval: ${interval}`);
   const params=new URLSearchParams({symbol,interval,limit:String(Math.min(1000,Math.max(20,limit)))});
   if(startTime!==undefined)params.set('startTime',String(startTime));
   if(endTime!==undefined)params.set('endTime',String(endTime));
   const r=await fetch(`${BINANCE_BASE}/klines?${params.toString()}`,{headers:{accept:'application/json'}});
-  if(!r.ok)throw new Error(`Binance klines request failed (${r.status}).`);
+  if(!r.ok){let detail='';try{const body=await r.json() as {code?:number;msg?:string};detail=body.msg?` ${body.msg}${body.code!==undefined?` (${body.code})`:''}`:'';}catch{}throw new Error(`Binance klines request failed (${r.status}).${detail}`);}
   return await r.json() as unknown[][];
 }
 
@@ -20,6 +22,7 @@ export default async function handler(req:any,res:any){
       const symbol=String(req.query?.symbol??'').trim().toUpperCase();
       const interval=String(req.query?.interval??'5m').trim();
       if(!/^[A-Z0-9_]+$/.test(symbol))return respond(res,{error:'Invalid symbol.'},400);
+      if(!SUPPORTED_INTERVALS.has(interval))return respond(res,{error:`Unsupported Binance Spot interval: ${interval}`,supportedIntervals:[...SUPPORTED_INTERVALS]},400);
       if(kind==='klines'){
         const limit=Math.min(1000,Math.max(20,Number(req.query?.limit??180)));
         const startRaw=Number(req.query?.startTime),endRaw=Number(req.query?.endTime);
@@ -30,9 +33,6 @@ export default async function handler(req:any,res:any){
       const total=Math.min(100000,Math.max(20000,Number(req.query?.total??20000)));
       const ms=intervalMs(interval);
       const rows:unknown[][]=[];
-      // We need one extra raw candle because the current open candle is deliberately
-      // excluded by the client. The old cursor requested exactly `total` rows, so
-      // after excluding the live candle the validator received 19,999 instead of 20,000.
       const rawTarget=total+1;
       let cursor=Math.max(0,Date.now()-rawTarget*ms);
       while(rows.length<rawTarget){
