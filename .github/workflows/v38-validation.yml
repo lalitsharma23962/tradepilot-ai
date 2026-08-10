@@ -1,0 +1,18 @@
+name: v38 Walk-Forward Validation
+
+on:
+  push:
+    branches: [agent/core-engine-validation-fixes]
+
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      - run: node --experimental-strip-types scripts/run-v38-validation.ts
