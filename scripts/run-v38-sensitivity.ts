@@ -2,6 +2,7 @@ import { fetchHistoricalCandles } from '../src/lib/backtestV6';
 import { runValidation } from '../src/lib/backtestV11';
 import { TRADING_CONFIG } from '../src/lib/tradingConfig';
 
+// Diagnostic-only matrix: never relaxes the 0.15R friction gate.
 const YEAR_BARS: Record<'1h'|'4h', number> = { '1h': 365 * 24, '4h': Math.floor(365 * 24 / 4) };
 const SCORE_MULTIPLIERS = [1, .85, .70] as const;
 const STOP_FLOORS: Array<{label:string;value?:number}> = [
