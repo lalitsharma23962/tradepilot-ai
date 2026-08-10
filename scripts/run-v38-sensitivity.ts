@@ -32,22 +32,38 @@ async function fetchAbsolute(symbol:string,interval:string,total:number):Promise
 function fmt(v:number){return Number.isFinite(v)?v.toFixed(3):'—';}
 function scoreLabel(mult:number){return mult===1?'baseline':`-${Math.round((1-mult)*100)}%`;}
 function expR(avgTradePct:number){return TRADING_CONFIG.riskPerTradePct>0?avgTradePct/TRADING_CONFIG.riskPerTradePct:0;}
-function funnelRow(f:any){return `${f.barsEvaluated}/${f.noLocalPattern}/${f.scoreRejected}/${f.structuralStopRejected}/${f.costRejected}/${f.rejectedPathCapacity}/${f.targetUnreachable??0}/${f.tradesOpened}`;}
+function funnelRow(f:any){
+  // Funnel names below map 1:1 to the actual engine counters. We deliberately expose
+  // every stage rather than inferring a rejection from the final trade count.
+  return [
+    f.barsEvaluated,
+    f.noLocalPattern,
+    f.rejectedScore,
+    f.rejectedStructuralStop,
+    f.rejectedCost,
+    f.rejectedPathCapacity,
+    f.targetUnreachable,
+    f.signalAccepted,
+    f.ordersAttempted,
+    f.tradesOpened,
+  ].map((v:any)=>Number.isFinite(Number(v))?Number(v):0).join('/');
+}
 async function main(){
  console.log('v38 CONTROLLED SENSITIVITY AUDIT — HARNESS REPAIRED');
- console.log('Data source: absolute Binance data-api.binance.vision; no relative /api endpoint.');
+ console.log('Data source: absolute Binance data-api.binance.vision; runner never calls a relative /api endpoint.');
  console.log('Economic gate: costInR <= 0.15R (UNCHANGED); allocation: 25/25/50 (UNCHANGED).');
+ console.log('Funnel: bars/noPattern/score/stopEnv/costR/capacity/target/signalAccepted/ordersAttempted/fills');
  for(const interval of ['1h','4h'] as const){
   const yearBars=YEAR_BARS[interval],horizon=TRADING_CONFIG.maxBarsInTrade[interval]??120,warmup=Math.max(220,TRADING_CONFIG.capacitySamples*horizon+horizon+32);
   const candles=await fetchAbsolute('BTCUSDT',interval,yearBars+warmup);
   if(candles.length<yearBars)throw new Error(`${interval}: received ${candles.length}, need ${yearBars}`);
   console.log(`\n=== BTCUSDT ${interval} — ${yearBars} trailing-year candles + ${warmup} causal warm-up ===`);
-  console.log('Score | Stop | Targets | bars/pattern/score/stopEnv/costR/capacity/target/fills | F1 t/PF/ExpR | F2 t/PF/ExpR | F3 t/PF/ExpR | OOS t/PF/ExpR | Gate');
-  console.log('-'.repeat(230));
+  console.log('Score | Stop | Targets | bars/noPattern/score/stopEnv/costR/capacity/target/signalAccepted/orders/fills | F1 t/PF/ExpR | F2 t/PF/ExpR | F3 t/PF/ExpR | OOS t/PF/ExpR | Gate');
+  console.log('-'.repeat(250));
   for(const scoreMult of SCORE_MULTIPLIERS)for(const stop of STOP_FLOORS)for(const target of TARGETS){
     const report=await runValidation('BTCUSDT',interval,{historyTargetOverride:yearBars,candlesOverride:candles,minScoreOverride:TRADING_CONFIG.minScore*scoreMult,minStopAtrOverride:stop.value,targetMultiples:target.value} as any);
-    const f:any=report.signalFunnel; const folds:any[]=report.foldDiagnostics.production as any[]; const ft=folds.slice(0,3).map(x=>`${x.trades}/${fmt(x.profitFactor)}/${fmt(x.expectancyR)}`); const o:any=report.walkForward.test;
-    console.log(`${scoreLabel(scoreMult).padEnd(6)}| ${stop.label.padEnd(8)}| ${target.label.padEnd(16)}| ${funnelRow(f).padEnd(72)}| ${ft[0].padEnd(14)}| ${ft[1].padEnd(14)}| ${ft[2].padEnd(14)}| ${(o?`${o.trades}/${fmt(o.profitFactor)}/${fmt(expR(o.avgTrade))}`:'—').padEnd(16)}| ${report.gate.status}`);
+    const f:any=report.signalFunnel??{}; const folds:any[]=report.foldDiagnostics.production as any[]; const ft=folds.slice(0,3).map(x=>`${x.trades}/${fmt(x.profitFactor)}/${fmt(x.expectancyR)}`); const o:any=report.walkForward.test;
+    console.log(`${scoreLabel(scoreMult).padEnd(6)}| ${stop.label.padEnd(8)}| ${target.label.padEnd(16)}| ${funnelRow(f).padEnd(94)}| ${ft[0].padEnd(14)}| ${ft[1].padEnd(14)}| ${ft[2].padEnd(14)}| ${(o?`${o.trades}/${fmt(o.profitFactor)}/${fmt(expR(o.avgTrade))}`:'—').padEnd(16)}| ${report.gate.status}`);
   }
  }
 }
