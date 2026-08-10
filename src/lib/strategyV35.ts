@@ -1,39 +1,40 @@
-import { evaluateProductionStrategy as evaluateEntryStrategy, type StrategyConfig, type StrategySignal } from './strategyV32';
-export type { StrategyConfig, StrategySignal } from './strategyV32';
+import type { Side } from './types';
 import type { MarketBar } from './marketData';
+import type { StrategyConfig, StrategySignal } from './strategyV32';
 import { TRADING_CONFIG } from './tradingConfig';
 import { runnerProtectedStop } from './runnerProtection';
+export type { StrategyConfig, StrategySignal } from './strategyV32';
 
-const ENTRY_MIN_R=TRADING_CONFIG.productionMinRiskReward;
-const ENTRY_MAX_R=TRADING_CONFIG.productionMaxRiskReward;
 const TARGET_CANDIDATES=[2,2.5,3,3.5,4] as const;
 const DEFAULT_CAPACITY_HORIZON=TRADING_CONFIG.maxBarsInTrade['5m'];
 export const MIN_INDEPENDENT_SAMPLES=TRADING_CONFIG.capacitySamples;
 
 const mean=(v:number[])=>v.length?v.reduce((a,b)=>a+b,0)/v.length:0;
-const percentile=(v:number[],q:number)=>{if(!v.length)return 0;const s=[...v].sort((a,b)=>a-b),x=(s.length-1)*Math.max(0,Math.min(1,q)),lo=Math.floor(x),hi=Math.ceil(x);return lo===hi?s[lo]:s[lo]+(s[hi]-s[lo])*(x-lo);};
+const clamp=(v:number,a:number,b:number)=>Math.max(a,Math.min(b,v));
+const std=(v:number[])=>{const m=mean(v);return v.length>1?Math.sqrt(mean(v.map(x=>(x-m)**2))):0;};
+const ema=(v:number[],p:number)=>{if(!v.length)return 0;const k=2/(p+1);let e=v[0];for(let i=1;i<v.length;i++)e=v[i]*k+e*(1-k);return e;};
 const atrAt=(bars:MarketBar[],endExclusive:number,period=20)=>{const start=Math.max(1,endExclusive-period),ranges:number[]=[];for(let i=start;i<endExclusive;i++){const b=bars[i],p=bars[i-1];ranges.push(Math.max(b.high-b.low,Math.abs(b.high-p.close),Math.abs(b.low-p.close)));}return mean(ranges);};
+const efficiency=(v:number[])=>{if(v.length<3)return 0;const net=Math.abs(v.at(-1)!-v[0]);const path=v.slice(1).reduce((s,x,i)=>s+Math.abs(x-v[i]),0);return path?net/path:0;};
+const slope=(v:number[])=>{if(v.length<2)return 0;const n=v.length,xm=(n-1)/2,ym=mean(v);let a=0,b=0;for(let i=0;i<n;i++){a+=(i-xm)*(v[i]-ym);b+=(i-xm)**2;}return b?a/b:0;};
+const consistency=(v:number[],side:1|-1)=>{if(v.length<2)return 0;const d=v.slice(1).map((x,i)=>x-v[i]);return d.filter(x=>side===1?x>0:x<0).length/d.length;};
+const rsi=(v:number[])=>{const s=v.slice(-15),d=s.slice(1).map((x,i)=>x-s[i]),g=mean(d.map(x=>Math.max(x,0))),l=mean(d.map(x=>Math.max(-x,0)));return l?100-100/(1+g/l):50;};
+const wait=(entry:number,reasons:string[],score=0):StrategySignal=>({action:'WAIT',score:Math.round(clamp(score,0,100)),confidence:Math.round(clamp(score,0,100)),strategy:'No Trade',entry,stopLoss:entry,takeProfit:entry,riskReward:0,family:'none',pathCapacity:0,reasons});
+
 interface CapacityEvidence{capacityPrice:number;targetBeforeStopRate:number;samples:number;}
 
 /**
- * Causal historical feasibility test.
- *
- * Samples are deliberately non-overlapping: every episode is exactly
- * horizonBars long and the next sample starts horizonBars earlier. The
- * decision bar itself is excluded from `completed`, so the test cannot see
- * the future bar used to make the current decision.
+ * Causal capacity evidence. The current decision bar is excluded and every
+ * historical episode is separated by the full forward horizon, so samples
+ * cannot overlap. No current/future entry-quality feature is used here.
  */
-function independentPathCapacity(input:MarketBar[],side:'LONG'|'SHORT',currentAtr:number,currentRisk:number,targetR:number,horizonBars:number,capacityQuantile:number):CapacityEvidence{
+function independentPathCapacity(input:MarketBar[],side:Side,currentAtr:number,currentRisk:number,targetR:number,horizonBars:number,capacityQuantile:number):CapacityEvidence{
  const unavailable={capacityPrice:0,targetBeforeStopRate:0,samples:0};
  if(!input.length||!(currentAtr>0)||!(currentRisk>0)||horizonBars<1)return unavailable;
- const completed=input.slice(0,-1);
- const requiredLookback=MIN_INDEPENDENT_SAMPLES*horizonBars;
+ const completed=input.slice(0,-1),requiredLookback=MIN_INDEPENDENT_SAMPLES*horizonBars;
  if(completed.length<requiredLookback+horizonBars+21)return unavailable;
- const lastStart=completed.length-horizonBars;
- const firstStart=Math.max(20,lastStart-requiredLookback);
+ const lastStart=completed.length-horizonBars,firstStart=Math.max(20,lastStart-requiredLookback);
  if(lastStart<=firstStart)return unavailable;
- const riskAtr=currentRisk/currentAtr;
- if(!Number.isFinite(riskAtr)||riskAtr<=0)return unavailable;
+ const riskAtr=currentRisk/currentAtr;if(!Number.isFinite(riskAtr)||riskAtr<=0)return unavailable;
  const runnerSide=side==='LONG'?1:-1,excursions:number[]=[],targetHits:number[]=[];
  let samples=0,targetBeforeStop=0;
  for(let i=lastStart-1;i>=firstStart;i-=horizonBars){
@@ -57,41 +58,80 @@ function independentPathCapacity(input:MarketBar[],side:'LONG'|'SHORT',currentAt
  const capacityAtr=percentile(excursions,capacityQuantile);
  return{capacityPrice:Number.isFinite(capacityAtr)&&capacityAtr>0?currentAtr*capacityAtr:0,targetBeforeStopRate:targetBeforeStop/samples,samples};
 }
+const percentile=(v:number[],q:number)=>{if(!v.length)return 0;const s=[...v].sort((a,b)=>a-b),x=(s.length-1)*clamp(q,0,1),lo=Math.floor(x),hi=Math.ceil(x);return lo===hi?s[lo]:s[lo]+(s[hi]-s[lo])*(x-lo);};
+const economicHitRate=(targetR:number,costInR:number)=>{const pf=TRADING_CONFIG.minProfitFactor;if(!Number.isFinite(costInR)||targetR<=costInR)return 1;return clamp((pf*(1+costInR))/((targetR-costInR)+pf*(1+costInR)),0,1);};
 
-function economicHitRate(targetR:number,costInR:number):number{
- const pf=TRADING_CONFIG.minProfitFactor;
- if(!Number.isFinite(costInR)||targetR<=costInR)return 1;
- return Math.max(0,Math.min(1,(pf*(1+costInR))/((targetR-costInR)+pf*(1+costInR))));
+function completedHourly(bars:MarketBar[]):MarketBar[]{
+ if(bars.length<8)return[];
+ const steps=bars.slice(1).map((b,i)=>b.openTime-bars[i].openTime).filter(x=>x>0).sort((a,b)=>a-b),step=steps[Math.floor(steps.length/2)]??0;
+ if(step<=0||step>=3600000||3600000%step!==0)return[];
+ const perHour=3600000/step,groups=new Map<number,MarketBar[]>();
+ for(const b of bars){const key=Math.floor(b.openTime/3600000)*3600000,g=groups.get(key);if(g)g.push(b);else groups.set(key,[b]);}
+ return Array.from(groups.entries()).sort((a,b)=>a[0]-b[0]).filter(([,g])=>g.length===perHour).map(([openTime,g])=>({openTime,open:g[0].open,high:Math.max(...g.map(x=>x.high)),low:Math.min(...g.map(x=>x.low)),close:g[g.length-1].close,volume:g.reduce((s,x)=>s+x.volume,0)}));
 }
 
+/** v36 entry engine: score evidence continuously instead of requiring brittle
+ * all-or-nothing family conjunctions. Safety/economic gates remain hard. */
 export function evaluateProductionStrategy(input:number[]|MarketBar[],config:Partial<StrategyConfig>={}):StrategySignal{
- const extended=config as Partial<StrategyConfig>&{capacityBars?:MarketBar[]};
- const minEntryScore=TRADING_CONFIG.minScore,ultraScore=TRADING_CONFIG.ultraScore;
- const entrySignal=evaluateEntryStrategy(input,{...config,minScore:Math.max(minEntryScore,config.minScore??minEntryScore),minRiskReward:ENTRY_MIN_R,maxRiskReward:ENTRY_MAX_R,riskReward:undefined,skipLegacyPathCapacity:true});
- if(entrySignal.action==='WAIT')return entrySignal;
- const risk=Math.abs(entrySignal.entry-entrySignal.stopLoss);
- if(!Number.isFinite(risk)||risk<=0)return{...entrySignal,action:'WAIT',strategy:'No Trade',reasons:[...entrySignal.reasons,'Invalid structural risk distance']};
- const capacityBars=extended.capacityBars??(Array.isArray(input)&&input.length&&typeof input[0]!=='number'?input as MarketBar[]:[]);
- const currentAtr=capacityBars.length>=21?atrAt(capacityBars,capacityBars.length):0;
- const horizonBars=Math.max(1,Math.floor(config.capacityHorizonBars??DEFAULT_CAPACITY_HORIZON));
- const roundTripCost=2*((config.feeBps??TRADING_CONFIG.feeBps)+(config.slippageBps??TRADING_CONFIG.slippageBps))/10000;
- const costInR=risk>0?roundTripCost*entrySignal.entry/risk:Infinity;
+ const cfg=config as Partial<StrategyConfig>&{capacityBars?:MarketBar[]};
+ const raw=Array.isArray(input)&&input.length&&typeof input[0]!=='number'?input as MarketBar[]:(input as number[]).map((close,i)=>({openTime:i,open:close,high:close,low:close,close,volume:0}));
+ const lookback=cfg.lookback??TRADING_CONFIG.lookback,bars=raw.filter(b=>Number.isFinite(b.close)&&b.close>0).slice(-lookback),p=bars.map(b=>b.close),entry=p.at(-1)??0;
+ if(cfg.funnel)cfg.funnel.barsEvaluated++;
+ if(p.length<160||!entry){if(cfg.funnel)cfg.funnel.insufficientHistory++;return wait(entry,['Not enough history']);}
+ const a=atrAt(bars,bars.length,20),aFast=atrAt(bars,bars.length,12),aSlow=atrAt(bars,bars.length,48);
+ if(!(a>0)||!(aSlow>0))return wait(entry,['Invalid ATR state']);
+ const e20=ema(p,20),e50=ema(p,50),e100=ema(p,100),s12=slope(p.slice(-12))/entry,s24=slope(p.slice(-24))/entry,s48=slope(p.slice(-48))/entry;
+ const eff24=efficiency(p.slice(-24)),eff48=efficiency(p.slice(-48)),longCons=consistency(p.slice(-15),1),shortCons=consistency(p.slice(-15),-1),sep=Math.abs(e20-e50)/a,expansion=aFast/aSlow,vol=a/entry;
+ const up=e20>e50&&e50>e100,down=e20<e50&&e50<e100;
+ const last=bars.at(-1)!,prev=bars.at(-2)!,range=Math.max(last.high-last.low,entry*1e-8),body=Math.abs(last.close-last.open)/range,closeLoc=(last.close-last.low)/range;
+ const barLong=last.close>last.open&&last.close>=prev.close&&body>=.20&&closeLoc>=.55,barShort=last.close<last.open&&last.close<=prev.close&&body>=.20&&closeLoc<=.45;
+ const priorVol=bars.slice(-21,-1).map(b=>b.volume).filter(v=>Number.isFinite(v)&&v>0),avgVol=mean(priorVol),volumeRatio=avgVol>0?last.volume/avgVol:1,volumeHealthy=avgVol<=0||volumeRatio>=.70;
+ const hourly=completedHourly(bars),hp=hourly.map(b=>b.close),h20=ema(hp,20),h40=ema(hp,40),hS12=hp.length>=12?slope(hp.slice(-12))/Math.max(entry,1):0,hEff24=efficiency(hp.slice(-24));
+ const hLong=hourly.length>=50&&h20>h40&&hS12>0&&hEff24>=.06,hShort=hourly.length>=50&&h20<h40&&hS12<0&&hEff24>=.06;
+ const longDirectional=(up?1:0)+(s24>0?1:0)+(s48>0?1:0)+(eff24>=.14?1:0)+(eff48>=.10?1:0)+(longCons>=.47?1:0)+(sep>=.025?1:0);
+ const shortDirectional=(down?1:0)+(s24<0?1:0)+(s48<0?1:0)+(eff24>=.14?1:0)+(eff48>=.10?1:0)+(shortCons>=.47?1:0)+(sep>=.025?1:0);
+ const momentumLong=s12>Math.max(.000008,vol*.0025)&&(s24>0||s48>0)&&(eff24>=.10||eff48>=.08),momentumShort=s12<-Math.max(.000008,vol*.0025)&&(s24<0||s48<0)&&(eff24>=.10||eff48>=.08);
+ const cost=2*((cfg.feeBps??TRADING_CONFIG.feeBps)+(cfg.slippageBps??TRADING_CONFIG.slippageBps))/10000,costAware=vol>=Math.max(.00020,cost*.40)&&vol<=.05;
+ const rangeHigh=Math.max(...p.slice(-21,-1)),rangeLow=Math.min(...p.slice(-21,-1)),breakoutLong=entry>rangeHigh+a*.008&&prev.close<=rangeHigh+a*.006,breakoutShort=entry<rangeLow-a*.008&&prev.close>=rangeLow-a*.006;
+ const nearEma=Math.abs(entry-e20)<=a*1.75,pullbackLong=bars.slice(-12,-1).some(b=>b.low<=e20+a*.35||b.close<=e20*1.002),pullbackShort=bars.slice(-12,-1).some(b=>b.high>=e20-a*.35||b.close>=e20*.998);
+ const reclaimLong=entry>e20&&nearEma&&barLong,reclaimShort=entry<e20&&nearEma&&barShort;
+ const prevFast=atrAt(bars.slice(0,-3),Math.max(0,bars.length-3),12),prevSlow=atrAt(bars.slice(0,-3),Math.max(0,bars.length-3),48),prevExpansion=prevSlow>0?prevFast/prevSlow:1,compression=prevExpansion<.98,expanding=expansion>Math.max(.98,prevExpansion*1.02)&&expansion>prevExpansion+.01;
+ const mid20=mean(p.slice(-20)),sd20=std(p.slice(-20)),upper=mid20+2*sd20,lower=mid20-2*sd20,rrsi=rsi(p),prevRsi=rsi(p.slice(0,-1));
+ const rangeEvidence=(sep<=.05?1:0)+(eff24<=.32?1:0)+(eff48<=.28?1:0)+(expansion<=1.15?1:0);
+ const rangeRegime=rangeEvidence>=2;
+ const reversionLong=rangeRegime&&prevRsi<=38&&rrsi>prevRsi&&entry>=lower-a*.25&&entry<=lower+a*.55&&barLong;
+ const reversionShort=rangeRegime&&prevRsi>=62&&rrsi<prevRsi&&entry<=upper+a*.25&&entry>=upper-a*.55&&barShort;
+ const directionalLong=longDirectional>=3,directionalShort=shortDirectional>=3;
+ if(!directionalLong&&!directionalShort&&!rangeRegime){if(cfg.funnel)cfg.funnel.noLocalPattern++;return wait(entry,['Insufficient directional/range evidence']);}
+ const familyScore=(family:string,side:Side)=>{
+  const long=side==='LONG',dir=long?longDirectional:shortDirectional,mom=long?momentumLong:momentumShort,cons=long?longCons:shortCons,bar=long?barLong:barShort,trend=long?up:down,htf=long?hLong:hShort,pull=long?pullbackLong:pullbackShort,reclaim=long?reclaimLong:reclaimShort,breakout=long?breakoutLong:breakoutShort,reversion=long?reversionLong:reversionShort;
+  if(family==='trend')return (trend?16:0)+(dir>=3?14:0)+(dir>=5?7:0)+(mom?15:0)+(pull?9:0)+(reclaim?15:0)+(htf?7:0)+(cons>=.50?5:0)+(eff24>=.16?4:0)+(costAware?4:0)+(nearEma?4:0);
+  if(family==='breakout')return (trend?13:0)+(dir>=3?12:0)+(breakout?22:0)+(mom?15:0)+(bar?9:0)+(volumeHealthy?8:0)+(htf?6:0)+(eff24>=.12?5:0)+(costAware?6:0)+(expansion>1?4:0);
+  if(family==='compression')return (trend?12:0)+(dir>=3?12:0)+(compression?15:0)+(expanding?15:0)+(mom?12:0)+(bar?9:0)+(nearEma?6:0)+(htf?5:0)+(costAware?5:0)+(eff24>=.12?4:0);
+  return (rangeRegime?18:0)+(reversion?25:0)+((long?prevRsi<=32:prevRsi>=68)?13:0)+((long?rrsi>=30&&rrsi<=48:rrsi<=70&&rrsi>=52)?10:0)+((long?entry>=lower:entry<=upper)?9:0)+(bar?9:0)+(costAware?6:0)+(Math.abs(entry-mid20)<=a*1.75?5:0)+(dir>=3?5:0);
+ };
+ const candidates:{side:Side;family:string;score:number}[]=[];
+ for(const side of ['LONG','SHORT'] as Side[]){const directional=side==='LONG'?directionalLong:directionalShort;if(directional){for(const family of ['trend','breakout','compression'] as const){const score=familyScore(family,side);if(score>=55)candidates.push({side,family,score});}}if(rangeRegime){const score=familyScore('reversion',side);if(score>=55)candidates.push({side,family:'reversion',score});}}
+ candidates.sort((x,y)=>y.score-x.score);
+ if(cfg.funnel){for(const c of candidates){if(c.family==='trend')cfg.funnel.familyCandidatesTrend++;if(c.family==='breakout')cfg.funnel.familyCandidatesBreakout++;if(c.family==='compression')cfg.funnel.familyCandidatesCompression++;if(c.family==='reversion')cfg.funnel.familyCandidatesReversion++;} }
+ const minScore=Math.max(TRADING_CONFIG.minScore,cfg.minScore??TRADING_CONFIG.minScore),winner=candidates.find(c=>c.score>=minScore),best=candidates[0],score=winner?.score??best?.score??0;
+ if(!winner){if(cfg.funnel)cfg.funnel.rejectedScore++;return wait(entry,['Setup evidence exists but conviction score is below the production threshold'],score);}
+ const side=winner.side,family=winner.family;
+ const swingLook=cfg.swingLookback??TRADING_CONFIG.swingLookback,recent=bars.slice(-Math.max(3,swingLook)),swingLow=Math.min(...recent.map(b=>b.low)),swingHigh=Math.max(...recent.map(b=>b.high));
+ const rawRisk=side==='LONG'?Math.max(entry-swingLow,a*(cfg.minStopAtr??TRADING_CONFIG.minStopAtr)):Math.max(swingHigh-entry,a*(cfg.minStopAtr??TRADING_CONFIG.minStopAtr));
+ const minRisk=a*(cfg.minStopAtr??TRADING_CONFIG.minStopAtr),maxRisk=a*(cfg.maxStructuralRiskAtr??TRADING_CONFIG.maxStructuralRiskAtr);
+ if(rawRisk<minRisk){if(cfg.funnel)cfg.funnel.rejectedRiskFloor++;return wait(entry,['Structural risk is below the minimum ATR floor'],score);}
+ if(rawRisk>maxRisk){if(cfg.funnel)cfg.funnel.rejectedStructuralStop++;return wait(entry,['Structural stop is wider than the maximum ATR risk envelope'],score);}
+ const risk=rawRisk,costInR=cost*entry/risk,maxCostFraction=cfg.maxCostFractionOfRisk??TRADING_CONFIG.maxCostFractionOfRisk;
+ if(costInR>maxCostFraction){if(cfg.funnel)cfg.funnel.rejectedRiskFloor++;return wait(entry,['Round-trip fees and slippage consume too much of the structural risk budget'],score);}
+ const capacityBars=cfg.capacityBars??(raw.length?raw:[]),currentAtr=capacityBars.length>=21?atrAt(capacityBars,capacityBars.length):0,horizonBars=Math.max(1,Math.floor(cfg.capacityHorizonBars??DEFAULT_CAPACITY_HORIZON));
  let chosenR=0,chosen:CapacityEvidence|null=null,chosenRequired=1;
- for(const targetR of TARGET_CANDIDATES){
-  const required=economicHitRate(targetR,costInR);
-  const capacityQuantile=1-required;
-  const evidence=independentPathCapacity(capacityBars,entrySignal.action,currentAtr,risk,targetR,horizonBars,capacityQuantile);
-  const targetDistance=risk*targetR;
-  const pass=evidence.samples>=MIN_INDEPENDENT_SAMPLES&&evidence.targetBeforeStopRate>=required&&evidence.capacityPrice>=targetDistance;
-  if(pass){chosenR=targetR;chosen=evidence;chosenRequired=required;}
- }
- if(!chosen||!chosenR){if(config.funnel)config.funnel.rejectedPathCapacity++;return{...entrySignal,action:'WAIT',strategy:'No Trade',takeProfit:entrySignal.entry,riskReward:0,pathCapacity:chosen?.capacityPrice??0,reasons:[...entrySignal.reasons,'No target in the statistically feasible 2R-4R band clears its economic hurdle']};}
- const targetDistance=risk*chosenR,takeProfit=entrySignal.action==='LONG'?entrySignal.entry+targetDistance:entrySignal.entry-targetDistance;
- if(config.funnel)config.funnel.tradesOpened++;
- const quality=entrySignal.score>=ultraScore?'ultra-conviction':'qualified';
- return{...entrySignal,strategy:'Production Regime Breakout v36',takeProfit,riskReward:chosenR,pathCapacity:chosen.capacityPrice,reasons:[...entrySignal.reasons.filter(r=>!r.startsWith('Target ')),`v36 ${quality} entry qualified independently of target size`,`Dynamic target ${chosenR.toFixed(1)}R selected from 2R-4R`,`Independent capacity ${chosen.capacityPrice.toFixed(2)} supports ${targetDistance.toFixed(2)} target distance`,`Historical target-before-stop rate ${(chosen.targetBeforeStopRate*100).toFixed(1)}% clears ${(chosenRequired*100).toFixed(1)}% economic hurdle`,`${chosen.samples} non-overlapping historical capacity episodes`]};
+ for(const targetR of TARGET_CANDIDATES){const required=economicHitRate(targetR,costInR),evidence=independentPathCapacity(capacityBars,side,currentAtr,risk,targetR,horizonBars,1-required);const targetDistance=risk*targetR;if(evidence.samples>=MIN_INDEPENDENT_SAMPLES&&evidence.targetBeforeStopRate>=required&&evidence.capacityPrice>=targetDistance){chosenR=targetR;chosen=evidence;chosenRequired=required;}}
+ if(!chosen||!chosenR){if(cfg.funnel)cfg.funnel.rejectedPathCapacity++;return wait(entry,['Entry quality passed, but no 2R-4R target is historically feasible after costs'],score);}
+ const targetDistance=risk*chosenR,takeProfit=side==='LONG'?entry+targetDistance:entry-targetDistance;
+ if(cfg.funnel)cfg.funnel.tradesOpened++;
+ const quality=score>=TRADING_CONFIG.ultraScore?'ultra-conviction':'qualified';
+ return{action:side,score:Math.round(clamp(score,0,100)),confidence:Math.round(clamp(score,0,100)),strategy:'Production Regime Breakout v36',entry,stopLoss:side==='LONG'?entry-risk:entry+risk,takeProfit,riskReward:chosenR,family,pathCapacity:chosen.capacityPrice,reasons:[`v36 ${quality} ${family} setup`,`Directional evidence ${side==='LONG'?longDirectional:shortDirectional}/7`,`Cost-aware structural risk`,`Dynamic target ${chosenR.toFixed(1)}R selected from 2R-4R`,`Independent capacity ${chosen.capacityPrice.toFixed(2)} supports ${targetDistance.toFixed(2)} target distance`,`Historical target-before-stop rate ${(chosen.targetBeforeStopRate*100).toFixed(1)}% clears ${(chosenRequired*100).toFixed(1)}% economic hurdle`,`${chosen.samples} non-overlapping historical capacity episodes`]};
 }
-
-function independentCurrentAtr(input:number[]|MarketBar[]):number{if(!input.length||typeof input[0]==='number')return 0;const bars=input as MarketBar[];return bars.length>=21?atrAt(bars,bars.length):0;}
 export function evaluateResearchStrategy(input:number[]|MarketBar[],config:Partial<StrategyConfig>={}):StrategySignal{return evaluateProductionStrategy(input,config);}
 export function evaluateStrategy(input:number[]|MarketBar[],config:Partial<StrategyConfig>={}):StrategySignal{return evaluateProductionStrategy(input,config);}
