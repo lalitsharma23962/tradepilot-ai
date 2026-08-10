@@ -80,18 +80,13 @@ export function TopBar({ page }: { page: Page }) {
       <div className="flex items-center gap-1.5 text-xs text-slate-500"><Activity className="h-3.5 w-3.5" /><span className="tabular-nums">{fmtMoney(account?.equity)}</span></div>
       <div className="flex items-center gap-2">
         {!running ? (
-          <Button
-            onClick={handleStart}
-            disabled={busy}
-            size="sm"
-            title={gateValidated ? 'Start the paper-trading engine' : 'Validation is not passed; the click will be safely rejected'}
-          >
+          <Button onClick={handleStart} disabled={busy} size="sm">
             <Play className="h-3.5 w-3.5" />Start Paper Bot
           </Button>
         ) : (
           <Button onClick={handleStop} disabled={busy} variant="danger" size="sm"><Square className="h-3.5 w-3.5" />Stop Paper Bot</Button>
         )}
-        <Button onClick={handleRestart} disabled={busy} variant="secondary" size="sm" title={gateValidated ? 'Restart the paper-trading engine' : 'Validation is not passed; restart will be safely rejected'}>
+        <Button onClick={handleRestart} disabled={busy} variant="secondary" size="sm">
           <RotateCcw className="h-3.5 w-3.5" />Restart
         </Button>
       </div>
