@@ -8,7 +8,6 @@ export type { StrategyConfig, StrategySignal } from './strategyV32';
 const TARGET_CANDIDATES=[2,2.5,3,3.5,4] as const;
 const DEFAULT_CAPACITY_HORIZON=TRADING_CONFIG.maxBarsInTrade['5m'];
 export const MIN_INDEPENDENT_SAMPLES=TRADING_CONFIG.capacitySamples;
-
 const mean=(v:number[])=>v.length?v.reduce((a,b)=>a+b,0)/v.length:0;
 const clamp=(v:number,a:number,b:number)=>Math.max(a,Math.min(b,v));
 const std=(v:number[])=>{const m=mean(v);return v.length>1?Math.sqrt(mean(v.map(x=>(x-m)**2))):0;};
@@ -19,14 +18,7 @@ const slope=(v:number[])=>{if(v.length<2)return 0;const n=v.length,xm=(n-1)/2,ym
 const consistency=(v:number[],side:1|-1)=>{if(v.length<2)return 0;const d=v.slice(1).map((x,i)=>x-v[i]);return d.filter(x=>side===1?x>0:x<0).length/d.length;};
 const rsi=(v:number[])=>{const s=v.slice(-15),d=s.slice(1).map((x,i)=>x-s[i]),g=mean(d.map(x=>Math.max(x,0))),l=mean(d.map(x=>Math.max(-x,0)));return l?100-100/(1+g/l):50;};
 const wait=(entry:number,reasons:string[],score=0):StrategySignal=>({action:'WAIT',score:Math.round(clamp(score,0,100)),confidence:Math.round(clamp(score,0,100)),strategy:'No Trade',entry,stopLoss:entry,takeProfit:entry,riskReward:0,family:'none',pathCapacity:0,reasons});
-
 interface CapacityEvidence{capacityPrice:number;targetBeforeStopRate:number;samples:number;}
-
-/**
- * Causal capacity evidence. The current decision bar is excluded and every
- * historical episode is separated by the full forward horizon, so samples
- * cannot overlap. No current/future entry-quality feature is used here.
- */
 function independentPathCapacity(input:MarketBar[],side:Side,currentAtr:number,currentRisk:number,targetR:number,horizonBars:number,capacityQuantile:number):CapacityEvidence{
  const unavailable={capacityPrice:0,targetBeforeStopRate:0,samples:0};
  if(!input.length||!(currentAtr>0)||!(currentRisk>0)||horizonBars<1)return unavailable;
@@ -60,7 +52,6 @@ function independentPathCapacity(input:MarketBar[],side:Side,currentAtr:number,c
 }
 const percentile=(v:number[],q:number)=>{if(!v.length)return 0;const s=[...v].sort((a,b)=>a-b),x=(s.length-1)*clamp(q,0,1),lo=Math.floor(x),hi=Math.ceil(x);return lo===hi?s[lo]:s[lo]+(s[hi]-s[lo])*(x-lo);};
 const economicHitRate=(targetR:number,costInR:number)=>{const pf=TRADING_CONFIG.minProfitFactor;if(!Number.isFinite(costInR)||targetR<=costInR)return 1;return clamp((pf*(1+costInR))/((targetR-costInR)+pf*(1+costInR)),0,1);};
-
 function completedHourly(bars:MarketBar[]):MarketBar[]{
  if(bars.length<8)return[];
  const steps=bars.slice(1).map((b,i)=>b.openTime-bars[i].openTime).filter(x=>x>0).sort((a,b)=>a-b),step=steps[Math.floor(steps.length/2)]??0;
@@ -70,8 +61,7 @@ function completedHourly(bars:MarketBar[]):MarketBar[]{
  return Array.from(groups.entries()).sort((a,b)=>a[0]-b[0]).filter(([,g])=>g.length===perHour).map(([openTime,g])=>({openTime,open:g[0].open,high:Math.max(...g.map(x=>x.high)),low:Math.min(...g.map(x=>x.low)),close:g[g.length-1].close,volume:g.reduce((s,x)=>s+x.volume,0)}));
 }
 
-/** v36 entry engine: score evidence continuously instead of requiring brittle
- * all-or-nothing family conjunctions. Safety/economic gates remain hard. */
+/** v36 scores continuous evidence; hard safety, cost, path and OOS gates remain. */
 export function evaluateProductionStrategy(input:number[]|MarketBar[],config:Partial<StrategyConfig>={}):StrategySignal{
  const cfg=config as Partial<StrategyConfig>&{capacityBars?:MarketBar[]};
  const raw=Array.isArray(input)&&input.length&&typeof input[0]!=='number'?input as MarketBar[]:(input as number[]).map((close,i)=>({openTime:i,open:close,high:close,low:close,close,volume:0}));
@@ -97,27 +87,25 @@ export function evaluateProductionStrategy(input:number[]|MarketBar[],config:Par
  const reclaimLong=entry>e20&&nearEma&&barLong,reclaimShort=entry<e20&&nearEma&&barShort;
  const prevFast=atrAt(bars.slice(0,-3),Math.max(0,bars.length-3),12),prevSlow=atrAt(bars.slice(0,-3),Math.max(0,bars.length-3),48),prevExpansion=prevSlow>0?prevFast/prevSlow:1,compression=prevExpansion<.98,expanding=expansion>Math.max(.98,prevExpansion*1.02)&&expansion>prevExpansion+.01;
  const mid20=mean(p.slice(-20)),sd20=std(p.slice(-20)),upper=mid20+2*sd20,lower=mid20-2*sd20,rrsi=rsi(p),prevRsi=rsi(p.slice(0,-1));
- const rangeEvidence=(sep<=.05?1:0)+(eff24<=.32?1:0)+(eff48<=.28?1:0)+(expansion<=1.15?1:0);
- const rangeRegime=rangeEvidence>=2;
- const reversionLong=rangeRegime&&prevRsi<=38&&rrsi>prevRsi&&entry>=lower-a*.25&&entry<=lower+a*.55&&barLong;
- const reversionShort=rangeRegime&&prevRsi>=62&&rrsi<prevRsi&&entry<=upper+a*.25&&entry>=upper-a*.55&&barShort;
+ const rangeEvidence=(sep<=.05?1:0)+(eff24<=.32?1:0)+(eff48<=.28?1:0)+(expansion<=1.15?1:0),rangeRegime=rangeEvidence>=2;
+ const reversionLong=rangeRegime&&prevRsi<=38&&rrsi>prevRsi&&entry>=lower-a*.25&&entry<=lower+a*.55&&barLong,reversionShort=rangeRegime&&prevRsi>=62&&rrsi<prevRsi&&entry<=upper+a*.25&&entry>=upper-a*.55&&barShort;
  const directionalLong=longDirectional>=3,directionalShort=shortDirectional>=3;
  if(!directionalLong&&!directionalShort&&!rangeRegime){if(cfg.funnel)cfg.funnel.noLocalPattern++;return wait(entry,['Insufficient directional/range evidence']);}
  const familyScore=(family:string,side:Side)=>{
   const long=side==='LONG',dir=long?longDirectional:shortDirectional,mom=long?momentumLong:momentumShort,cons=long?longCons:shortCons,bar=long?barLong:barShort,trend=long?up:down,htf=long?hLong:hShort,pull=long?pullbackLong:pullbackShort,reclaim=long?reclaimLong:reclaimShort,breakout=long?breakoutLong:breakoutShort,reversion=long?reversionLong:reversionShort;
-  if(family==='trend')return (trend?16:0)+(dir>=3?14:0)+(dir>=5?7:0)+(mom?15:0)+(pull?9:0)+(reclaim?15:0)+(htf?7:0)+(cons>=.50?5:0)+(eff24>=.16?4:0)+(costAware?4:0)+(nearEma?4:0);
-  if(family==='breakout')return (trend?13:0)+(dir>=3?12:0)+(breakout?22:0)+(mom?15:0)+(bar?9:0)+(volumeHealthy?8:0)+(htf?6:0)+(eff24>=.12?5:0)+(costAware?6:0)+(expansion>1?4:0);
-  if(family==='compression')return (trend?12:0)+(dir>=3?12:0)+(compression?15:0)+(expanding?15:0)+(mom?12:0)+(bar?9:0)+(nearEma?6:0)+(htf?5:0)+(costAware?5:0)+(eff24>=.12?4:0);
+  const directionalBase=Math.round((dir/7)*20);
+  if(family==='trend')return directionalBase+(trend?16:0)+(mom?14:0)+(pull?10:0)+(reclaim?15:0)+(htf?7:0)+(cons>=.50?5:0)+(eff24>=.16?4:0)+(costAware?4:0)+(nearEma?4:0);
+  if(family==='breakout')return directionalBase+(trend?13:0)+(breakout?22:0)+(mom?14:0)+(bar?9:0)+(volumeHealthy?8:0)+(htf?6:0)+(eff24>=.12?5:0)+(costAware?6:0)+(expansion>1?4:0);
+  if(family==='compression')return directionalBase+(trend?12:0)+(compression?15:0)+(expanding?15:0)+(mom?12:0)+(bar?9:0)+(nearEma?6:0)+(htf?5:0)+(costAware?5:0)+(eff24>=.12?4:0);
   return (rangeRegime?18:0)+(reversion?25:0)+((long?prevRsi<=32:prevRsi>=68)?13:0)+((long?rrsi>=30&&rrsi<=48:rrsi<=70&&rrsi>=52)?10:0)+((long?entry>=lower:entry<=upper)?9:0)+(bar?9:0)+(costAware?6:0)+(Math.abs(entry-mid20)<=a*1.75?5:0)+(dir>=3?5:0);
  };
  const candidates:{side:Side;family:string;score:number}[]=[];
- for(const side of ['LONG','SHORT'] as Side[]){const directional=side==='LONG'?directionalLong:directionalShort;if(directional){for(const family of ['trend','breakout','compression'] as const){const score=familyScore(family,side);if(score>=55)candidates.push({side,family,score});}}if(rangeRegime){const score=familyScore('reversion',side);if(score>=55)candidates.push({side,family:'reversion',score});}}
+ for(const side of ['LONG','SHORT'] as Side[]){const directional=side==='LONG'?directionalLong:directionalShort;if(directional){for(const family of ['trend','breakout','compression'] as const)candidates.push({side,family,score:familyScore(family,side)});}if(rangeRegime)candidates.push({side,family:'reversion',score:familyScore('reversion',side));}
  candidates.sort((x,y)=>y.score-x.score);
- if(cfg.funnel){for(const c of candidates){if(c.family==='trend')cfg.funnel.familyCandidatesTrend++;if(c.family==='breakout')cfg.funnel.familyCandidatesBreakout++;if(c.family==='compression')cfg.funnel.familyCandidatesCompression++;if(c.family==='reversion')cfg.funnel.familyCandidatesReversion++;} }
- const minScore=Math.max(TRADING_CONFIG.minScore,cfg.minScore??TRADING_CONFIG.minScore),winner=candidates.find(c=>c.score>=minScore),best=candidates[0],score=winner?.score??best?.score??0;
+ const minScore=Math.max(TRADING_CONFIG.minScore,cfg.minScore??TRADING_CONFIG.minScore),winner=candidates.find(x=>x.score>=minScore),score=winner?.score??(candidates[0]?.score??0);
+ if(cfg.funnel){for(const c of candidates){if(c.family==='trend')cfg.funnel.familyCandidatesTrend++;if(c.family==='breakout')cfg.funnel.familyCandidatesBreakout++;if(c.family==='compression')cfg.funnel.familyCandidatesCompression++;if(c.family==='reversion')cfg.funnel.familyCandidatesReversion++;}}
  if(!winner){if(cfg.funnel)cfg.funnel.rejectedScore++;return wait(entry,['Setup evidence exists but conviction score is below the production threshold'],score);}
- const side=winner.side,family=winner.family;
- const swingLook=cfg.swingLookback??TRADING_CONFIG.swingLookback,recent=bars.slice(-Math.max(3,swingLook)),swingLow=Math.min(...recent.map(b=>b.low)),swingHigh=Math.max(...recent.map(b=>b.high));
+ const side=winner.side,family=winner.family,swingLook=cfg.swingLookback??TRADING_CONFIG.swingLookback,recent=bars.slice(-Math.max(3,swingLook)),swingLow=Math.min(...recent.map(b=>b.low)),swingHigh=Math.max(...recent.map(b=>b.high));
  const rawRisk=side==='LONG'?Math.max(entry-swingLow,a*(cfg.minStopAtr??TRADING_CONFIG.minStopAtr)):Math.max(swingHigh-entry,a*(cfg.minStopAtr??TRADING_CONFIG.minStopAtr));
  const minRisk=a*(cfg.minStopAtr??TRADING_CONFIG.minStopAtr),maxRisk=a*(cfg.maxStructuralRiskAtr??TRADING_CONFIG.maxStructuralRiskAtr);
  if(rawRisk<minRisk){if(cfg.funnel)cfg.funnel.rejectedRiskFloor++;return wait(entry,['Structural risk is below the minimum ATR floor'],score);}
@@ -126,7 +114,7 @@ export function evaluateProductionStrategy(input:number[]|MarketBar[],config:Par
  if(costInR>maxCostFraction){if(cfg.funnel)cfg.funnel.rejectedRiskFloor++;return wait(entry,['Round-trip fees and slippage consume too much of the structural risk budget'],score);}
  const capacityBars=cfg.capacityBars??(raw.length?raw:[]),currentAtr=capacityBars.length>=21?atrAt(capacityBars,capacityBars.length):0,horizonBars=Math.max(1,Math.floor(cfg.capacityHorizonBars??DEFAULT_CAPACITY_HORIZON));
  let chosenR=0,chosen:CapacityEvidence|null=null,chosenRequired=1;
- for(const targetR of TARGET_CANDIDATES){const required=economicHitRate(targetR,costInR),evidence=independentPathCapacity(capacityBars,side,currentAtr,risk,targetR,horizonBars,1-required);const targetDistance=risk*targetR;if(evidence.samples>=MIN_INDEPENDENT_SAMPLES&&evidence.targetBeforeStopRate>=required&&evidence.capacityPrice>=targetDistance){chosenR=targetR;chosen=evidence;chosenRequired=required;}}
+ for(const targetR of TARGET_CANDIDATES){const required=economicHitRate(targetR,costInR),evidence=independentPathCapacity(capacityBars,side,currentAtr,risk,targetR,horizonBars,1-required),targetDistance=risk*targetR;if(evidence.samples>=MIN_INDEPENDENT_SAMPLES&&evidence.targetBeforeStopRate>=required&&evidence.capacityPrice>=targetDistance){chosenR=targetR;chosen=evidence;chosenRequired=required;}}
  if(!chosen||!chosenR){if(cfg.funnel)cfg.funnel.rejectedPathCapacity++;return wait(entry,['Entry quality passed, but no 2R-4R target is historically feasible after costs'],score);}
  const targetDistance=risk*chosenR,takeProfit=side==='LONG'?entry+targetDistance:entry-targetDistance;
  if(cfg.funnel)cfg.funnel.tradesOpened++;
