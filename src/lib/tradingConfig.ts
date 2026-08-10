@@ -1,14 +1,14 @@
 export type TradingMode='PAPER';
 
 /**
- * v37: cost-aware multi-timeframe paper-trading configuration.
+ * v38: cost-aware multi-timeframe paper-trading configuration.
  * The final risk/reward target is fixed at 2R; profits are taken progressively
  * at 0.5R, 1R, 1.5R and 2R. These values define an economic/risk envelope,
  * not a promise of profitability.
  */
 export const TRADING_CONFIG={
  mode:'PAPER' as TradingMode,
- strategyVersion:'v37',
+ strategyVersion:'v38',
  minScore:68,
  ultraScore:92,
  researchMinRiskReward:2,
@@ -16,9 +16,9 @@ export const TRADING_CONFIG={
  productionMinRiskReward:2,
  productionMaxRiskReward:2,
  atrStopMultiple:1.5,
- minStopAtr:1.0,
+ minStopAtr:.65,
  maxStructuralRiskAtr:3.2,
- maxCostFractionOfRisk:.40,
+ maxCostFractionOfRisk:.80,
  swingLookback:5,
  lookback:400,
  paperStartingCapital:50 as number,
@@ -34,8 +34,9 @@ export const TRADING_CONFIG={
  maxDailyLossPct:2,
  maxConsecutiveLosses:4,
  maxAccountDrawdownPct:15,
- timeframes:['5m','15m','30m','45m','1h','2h','3h','4h','1d'] as const,
- maxBarsInTrade:{'5m':720,'15m':240,'30m':160,'45m':128,'1h':120,'2h':80,'3h':64,'4h':48,'1d':20} as Record<string,number>,
+ // Binance Spot-supported intervals only. 45m and 3h are not valid Spot kline intervals.
+ timeframes:['5m','15m','30m','1h','2h','4h','1d'] as const,
+ maxBarsInTrade:{'5m':720,'15m':240,'30m':160,'1h':120,'2h':80,'4h':48,'1d':20} as Record<string,number>,
  capacitySamples:20,
  minFoldTrades:12,
  minTestTrades:30,
