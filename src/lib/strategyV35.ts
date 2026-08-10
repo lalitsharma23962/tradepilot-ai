@@ -5,7 +5,10 @@ import { TRADING_CONFIG } from './tradingConfig';
 import { runnerProtectedStop } from './runnerProtection';
 export type { StrategyConfig, StrategySignal } from './strategyV32';
 
-const TARGET_CANDIDATES=[2,2.5,3,3.5,4] as const;
+// v38: the production strategy no longer searches 2R-4R and then overwrites
+// the selected target to 2R.  The economic gate is evaluated against the
+// actual fixed 2R target used by the paper executor.
+const TARGET_CANDIDATES=[2] as const;
 const DEFAULT_CAPACITY_HORIZON=TRADING_CONFIG.maxBarsInTrade['5m'];
 export const MIN_INDEPENDENT_SAMPLES=TRADING_CONFIG.capacitySamples;
 const mean=(v:number[])=>v.length?v.reduce((a,b)=>a+b,0)/v.length:0;
@@ -61,7 +64,7 @@ function completedHourly(bars:MarketBar[]):MarketBar[]{
  return Array.from(groups.entries()).sort((a,b)=>a[0]-b[0]).filter(([,g])=>g.length===perHour).map(([openTime,g])=>({openTime,open:g[0].open,high:Math.max(...g.map(x=>x.high)),low:Math.min(...g.map(x=>x.low)),close:g[g.length-1].close,volume:g.reduce((s,x)=>s+x.volume,0)}));
 }
 
-/** v36 scores continuous evidence; hard safety, cost, path and OOS gates remain. */
+/** v38 scores continuous evidence; hard safety, cost, path and OOS gates remain. */
 export function evaluateProductionStrategy(input:number[]|MarketBar[],config:Partial<StrategyConfig>={}):StrategySignal{
  const cfg=config as Partial<StrategyConfig>&{capacityBars?:MarketBar[]};
  const raw=Array.isArray(input)&&input.length&&typeof input[0]!=='number'?input as MarketBar[]:(input as number[]).map((close,i)=>({openTime:i,open:close,high:close,low:close,close,volume:0}));
@@ -115,11 +118,11 @@ export function evaluateProductionStrategy(input:number[]|MarketBar[],config:Par
  const capacityBars=cfg.capacityBars??(raw.length?raw:[]),currentAtr=capacityBars.length>=21?atrAt(capacityBars,capacityBars.length):0,horizonBars=Math.max(1,Math.floor(cfg.capacityHorizonBars??DEFAULT_CAPACITY_HORIZON));
  let chosenR=0,chosen:CapacityEvidence|null=null,chosenRequired=1;
  for(const targetR of TARGET_CANDIDATES){const required=economicHitRate(targetR,costInR),evidence=independentPathCapacity(capacityBars,side,currentAtr,risk,targetR,horizonBars,1-required),targetDistance=risk*targetR;if(evidence.samples>=MIN_INDEPENDENT_SAMPLES&&evidence.targetBeforeStopRate>=required&&evidence.capacityPrice>=targetDistance){chosenR=targetR;chosen=evidence;chosenRequired=required;}}
- if(!chosen||!chosenR){if(cfg.funnel)cfg.funnel.rejectedPathCapacity++;return wait(entry,['Entry quality passed, but no 2R-4R target is historically feasible after costs'],score);}
+ if(!chosen||!chosenR){if(cfg.funnel)cfg.funnel.rejectedPathCapacity++;return wait(entry,['Entry quality passed, but the fixed 2R target is not historically feasible after costs'],score);}
  const targetDistance=risk*chosenR,takeProfit=side==='LONG'?entry+targetDistance:entry-targetDistance;
  if(cfg.funnel)cfg.funnel.tradesOpened++;
  const quality=score>=TRADING_CONFIG.ultraScore?'ultra-conviction':'qualified';
- return{action:side,score:Math.round(clamp(score,0,100)),confidence:Math.round(clamp(score,0,100)),strategy:'Production Regime Breakout v36',entry,stopLoss:side==='LONG'?entry-risk:entry+risk,takeProfit,riskReward:chosenR,family,pathCapacity:chosen.capacityPrice,reasons:[`v36 ${quality} ${family} setup`,`Directional evidence ${side==='LONG'?longDirectional:shortDirectional}/7`,`Cost-aware structural risk`,`Dynamic target ${chosenR.toFixed(1)}R selected from 2R-4R`,`Independent capacity ${chosen.capacityPrice.toFixed(2)} supports ${targetDistance.toFixed(2)} target distance`,`Historical target-before-stop rate ${(chosen.targetBeforeStopRate*100).toFixed(1)}% clears ${(chosenRequired*100).toFixed(1)}% economic hurdle`,`${chosen.samples} non-overlapping historical capacity episodes`]};
+ return{action:side,score:Math.round(clamp(score,0,100)),confidence:Math.round(clamp(score,0,100)),strategy:'Production Regime Breakout v38',entry,stopLoss:side==='LONG'?entry-risk:entry+risk,takeProfit,riskReward:2,family,pathCapacity:chosen.capacityPrice,reasons:[`v38 ${quality} ${family} setup`,`Directional evidence ${side==='LONG'?longDirectional:shortDirectional}/7`,`Cost-aware structural risk`,`Fixed 2.0R final target`,`Independent capacity ${chosen.capacityPrice.toFixed(2)} supports ${targetDistance.toFixed(2)} target distance`,`Historical target-before-stop rate ${(chosen.targetBeforeStopRate*100).toFixed(1)}% clears ${(chosenRequired*100).toFixed(1)}% economic hurdle`,`${chosen.samples} non-overlapping historical capacity episodes`]};
 }
 export function evaluateResearchStrategy(input:number[]|MarketBar[],config:Partial<StrategyConfig>={}):StrategySignal{return evaluateProductionStrategy(input,config);}
 export function evaluateStrategy(input:number[]|MarketBar[],config:Partial<StrategyConfig>={}):StrategySignal{return evaluateProductionStrategy(input,config);}
