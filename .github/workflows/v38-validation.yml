@@ -15,4 +15,4 @@ jobs:
           node-version: 22
           cache: npm
       - run: npm ci
-      - run: node --experimental-strip-types scripts/run-v38-validation.ts
+      - run: npx -y tsx scripts/run-v38-validation.ts
