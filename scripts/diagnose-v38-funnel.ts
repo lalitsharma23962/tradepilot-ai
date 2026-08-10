@@ -2,13 +2,15 @@ import { fetchHistoricalCandles,newFunnelCounters,type FunnelCounters } from '..
 import { evaluateProductionStrategy,MIN_INDEPENDENT_SAMPLES } from '../src/lib/strategyV35';
 import { TRADING_CONFIG } from '../src/lib/tradingConfig';
 
-const YEAR_BARS:Record<'1h'|'4h',number>={
+const YEAR_BARS:Record<'5m'|'1h'|'4h',number>={
+ '5m':100000,
  '1h':365*24,
  '4h':Math.floor(365*24/4),
 };
 
-function printFunnel(interval:'1h'|'4h',f:FunnelCounters,evaluated:number){
- console.log(`\n=== BTCUSDT ${interval} — exact trailing 1-year v38 funnel ===`);
+function printFunnel(interval:'5m'|'1h'|'4h',f:FunnelCounters,evaluated:number){
+ const windowLabel=interval==='5m'?'100,000-bar v38 funnel':'exact trailing 1-year v38 funnel';
+ console.log(`\n=== BTCUSDT ${interval} — ${windowLabel} ===`);
  console.log('Gate'.padEnd(42)+'Count');
  console.log('-'.repeat(52));
  const rows:[string,number][]=[
@@ -29,7 +31,7 @@ function printFunnel(interval:'1h'|'4h',f:FunnelCounters,evaluated:number){
  console.log(`Trades closed: ${f.tradesClosed}`);
 }
 
-for(const interval of ['1h','4h'] as const){
+for(const interval of ['5m','1h','4h'] as const){
  const yearBars=YEAR_BARS[interval];
  const horizon=TRADING_CONFIG.maxBarsInTrade[interval]??TRADING_CONFIG.maxBarsInTrade['5m'];
  const capacityWarmup=Math.max(TRADING_CONFIG.lookback,160,MIN_INDEPENDENT_SAMPLES*horizon+horizon+21);
