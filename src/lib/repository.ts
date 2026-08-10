@@ -8,7 +8,27 @@ export async function getPositions():Promise<Position[]>{const rows=await query<
 function normalizePosition(r:Record<string,unknown>):Position{return{id:String(r.id),symbol:String(r.symbol),side:r.side as Position['side'],quantity:num(r.quantity),entry_price:num(r.entry_price),current_price:num(r.current_price),notional:num(r.notional),unrealized_pnl:num(r.unrealized_pnl),stop_loss:num(r.stop_loss),take_profit:num(r.take_profit),strategy:String(r.strategy??'AI Signal'),status:String(r.status??'OPEN'),opened_at:String(r.opened_at)};}
 export async function getTrades(limit=200):Promise<Trade[]>{const rows=await query<Record<string,unknown>>(`SELECT * FROM tp_trades ORDER BY closed_at DESC LIMIT $1;`,[limit]);return rows.map(normalizeTrade);}
 function normalizeTrade(r:Record<string,unknown>):Trade{return{id:String(r.id),symbol:String(r.symbol),side:r.side as Trade['side'],quantity:num(r.quantity),entry_price:num(r.entry_price),exit_price:num(r.exit_price),pnl:num(r.pnl),return_pct:num(r.return_pct),strategy:String(r.strategy??'AI Signal'),status:String(r.status??'CLOSED'),opened_at:String(r.opened_at),closed_at:String(r.closed_at)};}
-export async function getSnapshots(limit=500):Promise<Snapshot[]>{const rows=await query<Record<string,unknown>>(`SELECT * FROM tp_snapshots ORDER BY ts DESC LIMIT $1;`);return rows.map(normalizeSnapshot).reverse();}
+
+// Existing browser PGlite databases survive deployments. Older versions could have created
+// tp_snapshots with a subset of these columns, so make the snapshot schema self-healing before
+// both the direct snapshot reader and the derived performance reader touch it.
+let snapshotSchemaReady:Promise<void>|null=null;
+async function ensureSnapshotSchema():Promise<void>{
+ if(snapshotSchemaReady)return snapshotSchemaReady;
+ snapshotSchemaReady=(async()=>{
+  await execute(`CREATE TABLE IF NOT EXISTS tp_snapshots (id uuid PRIMARY KEY DEFAULT gen_random_uuid(),equity numeric(20,2) NOT NULL DEFAULT 0,cash numeric(20,2) NOT NULL DEFAULT 0,open_value numeric(20,2) NOT NULL DEFAULT 0,unrealized_pnl numeric(20,2) NOT NULL DEFAULT 0,realized_pnl numeric(20,2) NOT NULL DEFAULT 0,ts timestamptz NOT NULL DEFAULT now());`);
+  await execute(`ALTER TABLE tp_snapshots ADD COLUMN IF NOT EXISTS equity numeric(20,2) NOT NULL DEFAULT 0;`);
+  await execute(`ALTER TABLE tp_snapshots ADD COLUMN IF NOT EXISTS cash numeric(20,2) NOT NULL DEFAULT 0;`);
+  await execute(`ALTER TABLE tp_snapshots ADD COLUMN IF NOT EXISTS open_value numeric(20,2) NOT NULL DEFAULT 0;`);
+  await execute(`ALTER TABLE tp_snapshots ADD COLUMN IF NOT EXISTS unrealized_pnl numeric(20,2) NOT NULL DEFAULT 0;`);
+  await execute(`ALTER TABLE tp_snapshots ADD COLUMN IF NOT EXISTS realized_pnl numeric(20,2) NOT NULL DEFAULT 0;`);
+  await execute(`ALTER TABLE tp_snapshots ADD COLUMN IF NOT EXISTS ts timestamptz NOT NULL DEFAULT now();`);
+  await execute(`CREATE INDEX IF NOT EXISTS idx_tp_snapshots_ts ON tp_snapshots(ts);`);
+ })().catch(err=>{snapshotSchemaReady=null;throw err;});
+ return snapshotSchemaReady;
+}
+
+export async function getSnapshots(limit=500):Promise<Snapshot[]>{await ensureSnapshotSchema();const rows=await query<Record<string,unknown>>(`SELECT * FROM tp_snapshots ORDER BY ts DESC LIMIT $1;`,[limit]);return rows.map(normalizeSnapshot).reverse();}
 function normalizeSnapshot(r:Record<string,unknown>):Snapshot{return{id:String(r.id),equity:num(r.equity),cash:num(r.cash),open_value:num(r.open_value),unrealized_pnl:num(r.unrealized_pnl),realized_pnl:num(r.realized_pnl),ts:String(r.ts)};}
 export async function getPerformance():Promise<Performance>{const account=await getAccount(),positions=await getPositions(),trades=await getTrades(1000),wins=trades.filter(t=>t.pnl>0).length,losses=trades.filter(t=>t.pnl<0).length,tradeCount=trades.length,pnls=trades.map(t=>t.pnl),winRate=tradeCount?wins/tradeCount*100:0,bestTrade=pnls.length?Math.max(...pnls):0,worstTrade=pnls.length?Math.min(...pnls):0,avgTrade=pnls.length?pnls.reduce((a,b)=>a+b,0)/pnls.length:0,grossProfit=pnls.filter(p=>p>0).reduce((a,b)=>a+b,0),grossLoss=Math.abs(pnls.filter(p=>p<0).reduce((a,b)=>a+b,0)),profitFactor=grossLoss?grossProfit/grossLoss:grossProfit>0?Infinity:0,snapshots=await getSnapshots(500);let peak=0,maxDrawdown=0,maxDrawdownPct=0;for(const s of snapshots){if(peak===0)peak=s.equity;peak=Math.max(peak,s.equity);const dd=Math.max(0,peak-s.equity),ddPct=peak>0?dd/peak*100:0;maxDrawdown=Math.max(maxDrawdown,dd);maxDrawdownPct=Math.max(maxDrawdownPct,ddPct);}const unrealized=positions.reduce((a,p)=>a+p.unrealized_pnl,0);return{equity:account.equity,total_pnl:account.total_pnl,realized_pnl:account.realized_pnl,unrealized_pnl:unrealized,win_rate:winRate,wins,losses,trade_count:tradeCount,open_positions:positions.length,best_trade:bestTrade,worst_trade:worstTrade,avg_trade:avgTrade,profit_factor:profitFactor===Infinity?0:profitFactor,max_drawdown:maxDrawdown,max_drawdown_pct:maxDrawdownPct};}
 export async function getSettings():Promise<Settings>{const account=await getAccount();return{risk_level:account.risk_level,max_allocation_pct:account.max_allocation_pct,default_allocation_pct:account.default_allocation_pct,stop_loss_pct:account.stop_loss_pct,take_profit_pct:account.take_profit_pct,confidence_threshold_pct:account.confidence_threshold_pct,max_strategies:account.max_strategies,leverage:account.leverage,loss_limit_pct:account.loss_limit_pct,fee_bps:account.fee_bps,slippage_bps:account.slippage_bps,theme:account.theme,trade_alerts:account.trade_alerts,pnl_alerts:account.pnl_alerts,risk_alerts:account.risk_alerts};}
