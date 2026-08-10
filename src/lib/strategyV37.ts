@@ -1,0 +1,55 @@
+import type { MarketBar } from './marketData';
+import { evaluateProductionStrategy as evaluateV36, evaluateResearchStrategy as researchV36, evaluateStrategy as strategyV36 } from './strategyV35';
+import type { StrategyConfig, StrategySignal } from './strategyV32';
+import { FINAL_TARGET_R, TARGET_LADDER } from './targetLadder';
+
+export interface StrategyTarget {
+  r: number;
+  fraction: number;
+  price: number;
+}
+
+export type StrategySignalV37 = StrategySignal & {
+  targets?: StrategyTarget[];
+  finalTargetR?: number;
+};
+
+function normalize(signal: StrategySignal): StrategySignalV37 {
+  if (signal.action === 'WAIT') return signal;
+  const side = signal.action === 'LONG' ? 1 : -1;
+  const risk = Math.abs(signal.entry - signal.stopLoss);
+  if (!(risk > 0) || !Number.isFinite(risk)) return signal;
+  const targets = TARGET_LADDER.map(level => ({
+    r: level.r,
+    fraction: level.fraction,
+    price: signal.entry + side * risk * level.r,
+  }));
+  const finalTarget = targets.at(-1)!.price;
+  return {
+    ...signal,
+    strategy: 'Production Regime Breakout v37',
+    takeProfit: finalTarget,
+    riskReward: FINAL_TARGET_R,
+    targets,
+    finalTargetR: FINAL_TARGET_R,
+    reasons: [
+      ...signal.reasons.filter(reason => !reason.toLowerCase().includes('dynamic target')),
+      'Fixed 1:2 risk/reward plan',
+      'Profit ladder: 0.5R / 1R / 1.5R / 2R',
+      '25% position reduction at each target',
+      'Stop management: breakeven after TP1, +0.5R after TP2, +1R after TP3',
+    ],
+  };
+}
+
+export function evaluateProductionStrategy(input: number[] | MarketBar[], config: Partial<StrategyConfig> = {}): StrategySignalV37 {
+  return normalize(evaluateV36(input, config));
+}
+
+export function evaluateResearchStrategy(input: number[] | MarketBar[], config: Partial<StrategyConfig> = {}): StrategySignalV37 {
+  return normalize(researchV36(input, config));
+}
+
+export function evaluateStrategy(input: number[] | MarketBar[], config: Partial<StrategyConfig> = {}): StrategySignalV37 {
+  return normalize(strategyV36(input, config));
+}
