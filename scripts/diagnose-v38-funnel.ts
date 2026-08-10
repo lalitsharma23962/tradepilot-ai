@@ -1,31 +1,55 @@
-import { runValidation } from '../src/lib/backtestV11.ts';
+import { fetchHistoricalCandles,newFunnelCounters,type FunnelCounters } from '../src/lib/backtestV6';
+import { evaluateProductionStrategy,MIN_INDEPENDENT_SAMPLES } from '../src/lib/strategyV35';
+import { TRADING_CONFIG } from '../src/lib/tradingConfig';
 
-function printFunnel(interval:string,report:Awaited<ReturnType<typeof runValidation>>){
- const f=report.signalFunnel;
- const rows=[
-  ['Bars evaluated',f?.barsEvaluated??0],
-  ['No pattern',f?.noLocalPattern??0],
-  ['Score rejected',f?.rejectedScore??0],
-  ['Stop envelope rejected',f?.rejectedStructuralStop??0],
-  ['Cost rejected (>0.15R)',f?.rejectedCost??0],
-  ['Capacity rejected (evidence unavailable)',f?.rejectedPathCapacity??0],
-  ['Target unreachable (2R infeasible)',f?.targetUnreachable??0],
-  ['Signal accepted',f?.signalAccepted??0],
-  ['Orders attempted',f?.ordersAttempted??0],
-  ['Trades opened / filled',f?.tradesOpened??0],
-  ['Trades closed',f?.tradesClosed??0],
- ] as const;
- console.log(`\n=== BTCUSDT ${interval} v38 funnel ===`);
+const YEAR_BARS:Record<'1h'|'4h',number>={
+ '1h':365*24,
+ '4h':Math.floor(365*24/4),
+};
+
+function printFunnel(interval:'1h'|'4h',f:FunnelCounters,evaluated:number){
+ console.log(`\n=== BTCUSDT ${interval} — exact trailing 1-year v38 funnel ===`);
  console.log('Gate'.padEnd(42)+'Count');
  console.log('-'.repeat(52));
+ const rows:[string,number][]=[
+  ['Bars evaluated',evaluated],
+  ['No pattern',f.noLocalPattern],
+  ['Score rejected',f.rejectedScore],
+  ['Stop envelope rejected',f.rejectedStructuralStop],
+  ['Cost rejected (>0.15R)',f.rejectedCost],
+  ['Capacity rejected (evidence unavailable)',f.rejectedPathCapacity],
+  ['Target unreachable (2R infeasible)',f.targetUnreachable],
+  ['Signal accepted',f.signalAccepted],
+ ];
  for(const [name,count] of rows)console.log(name.padEnd(42)+String(count));
  console.log('-'.repeat(52));
- console.log(`Family candidates: trend=${f?.familyCandidatesTrend??0}, breakout=${f?.familyCandidatesBreakout??0}, compression=${f?.familyCandidatesCompression??0}, reversion=${f?.familyCandidatesReversion??0}`);
- console.log(`Validation gate: ${report.gate.status}`);
- console.log(`OOS trades: ${report.walkForward.test?.trades??0}`);
+ console.log(`Family candidates: trend=${f.familyCandidatesTrend}, breakout=${f.familyCandidatesBreakout}, compression=${f.familyCandidatesCompression}, reversion=${f.familyCandidatesReversion}`);
+ console.log(`Orders attempted: ${f.ordersAttempted}`);
+ console.log(`Trades opened / filled: ${f.tradesOpened}`);
+ console.log(`Trades closed: ${f.tradesClosed}`);
 }
 
-for (const interval of ['1h','4h'] as const) {
- const report=await runValidation('BTCUSDT',interval);
- printFunnel(interval,report);
+for(const interval of ['1h','4h'] as const){
+ const yearBars=YEAR_BARS[interval];
+ const horizon=TRADING_CONFIG.maxBarsInTrade[interval]??TRADING_CONFIG.maxBarsInTrade['5m'];
+ const capacityWarmup=Math.max(TRADING_CONFIG.lookback,160,MIN_INDEPENDENT_SAMPLES*horizon+horizon+21);
+ const candles=await fetchHistoricalCandles('BTCUSDT',interval,yearBars+capacityWarmup);
+ const start=candles.length-yearBars;
+ const funnel=newFunnelCounters();
+ for(let i=start;i<candles.length;i++){
+  evaluateProductionStrategy(candles.slice(0,i+1),{
+   lookback:TRADING_CONFIG.lookback,
+   feeBps:TRADING_CONFIG.feeBps,
+   slippageBps:TRADING_CONFIG.slippageBps,
+   minScore:TRADING_CONFIG.minScore,
+   minStopAtr:TRADING_CONFIG.minStopAtr,
+   maxStructuralRiskAtr:TRADING_CONFIG.maxStructuralRiskAtr,
+   maxCostFractionOfRisk:.15,
+   swingLookback:TRADING_CONFIG.swingLookback,
+   capacityHorizonBars:horizon,
+   capacityBars:candles.slice(0,i+1),
+   funnel,
+  } as any);
+ }
+ printFunnel(interval,f,yearBars);
 }
