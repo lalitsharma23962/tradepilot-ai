@@ -1,0 +1,18 @@
+name: v38 Funnel Diagnostic
+
+on:
+  push:
+    branches: [diagnostic/v38-funnel-1h-4h]
+
+jobs:
+  diagnose:
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      - run: npx -y tsx scripts/diagnose-v38-funnel.ts
