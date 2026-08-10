@@ -14,6 +14,7 @@ const TARGETS: Array<{label:string;value:readonly number[]}> = [
 ];
 function fmt(v:number){return Number.isFinite(v)?v.toFixed(3):'—';}
 function scoreLabel(mult:number){return mult===1?'baseline':`-${Math.round((1-mult)*100)}%`;}
+function normalizeExpectancy(avgTradePct:number){return TRADING_CONFIG.riskPerTradePct>0?avgTradePct/TRADING_CONFIG.riskPerTradePct:0;}
 async function main(){
  console.log('v38 CONTROLLED SENSITIVITY AUDIT');
  console.log('Economic gate: costInR <= 0.15R (UNCHANGED)');
@@ -31,7 +32,7 @@ async function main(){
    const folds:any[]=report.foldDiagnostics.production as any[];
    const foldText=folds.slice(0,3).map(f=>`${f.trades}/${fmt(f.profitFactor)}/${fmt(f.expectancyR)}`);
    const oos:any=report.walkForward.test;
-   const oosText=oos?`${oos.trades}/${fmt(oos.profitFactor)}/${fmt(oos.expectancyR)}`:'—';
+   const oosText=oos?`${oos.trades}/${fmt(oos.profitFactor)}/${fmt(normalizeExpectancy(oos.avgTrade))}`:'—';
    console.log(`${scoreLabel(scoreMult).padEnd(6)}| ${stop.label.padEnd(8)}| ${target.label.padEnd(16)}| ${foldText[0].padEnd(21)}| ${foldText[1].padEnd(21)}| ${foldText[2].padEnd(21)}| ${oosText.padEnd(20)}| ${report.gate.status}`);
   }
  }
