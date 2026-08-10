@@ -39,14 +39,14 @@ function pf(rs:number[]){
   const l=Math.abs(rs.filter(x=>x<0).reduce((a,b)=>a+b,0));
   return l>0?g/l:(g>0?Infinity:0);
 }
-function simulate(c:Candle[], start:number, end:number, scoreMult:number, stopAtr:number|undefined, targetR:readonly number[], fold:number):Trade[]{
+function simulate(c:Candle[], start:number, end:number, scoreMult:number, stopAtr:number|undefined, targetR:readonly number[], fold:number, interval:'1h'|'4h'):Trade[]{
   const trades:Trade[]=[];
   let equity=TRADING_CONFIG.paperStartingCapital;
   let i=Math.max(start,WARMUP);
-  const maxBars=TRADING_CONFIG.maxBarsInTrade['1h'] ?? 120;
+  const maxBars=TRADING_CONFIG.maxBarsInTrade[interval] ?? 120;
   while(i<end-1){
     const hist=c.slice(Math.max(0,i-WARMUP),i+1);
-    const signal=evaluateProductionStrategy(hist,{minScore:TRADING_CONFIG.minScore*scoreMult,minRiskReward:Math.min(...targetR),maxRiskReward:Math.max(...targetR),minStopAtr:stopAtr??TRADING_CONFIG.minStopAtr,feeBps:TRADING_CONFIG.feeBps,slippageBps:TRADING_CONFIG.slippageBps,maxCostFractionOfRisk:MIN_COST_R} as any);
+    const signal=evaluateProductionStrategy(hist,{minScore:TRADING_CONFIG.minScore*scoreMult,targetMultiplesR:targetR,minStopAtr:stopAtr??TRADING_CONFIG.minStopAtr,feeBps:TRADING_CONFIG.feeBps,slippageBps:TRADING_CONFIG.slippageBps,maxCostFractionOfRisk:MIN_COST_R} as any);
     if(signal.action==='WAIT'){i++;continue;}
     const side=signal.action==='LONG'?1:-1;
     const next=c[i+1];
@@ -121,7 +121,7 @@ async function main(){
       const folds:Trade[][]=[];
       for(let f=0;f<3;f++){
         const a=oosStart+f*foldLen,b=f===2?data.length:oosStart+(f+1)*foldLen;
-        const rs=simulate(data,a,b,sm,st.atr,tg.r,f+1); folds.push(rs); all.push(...rs);
+        const rs=simulate(data,a,b,sm,st.atr,tg.r,f+1,interval); folds.push(rs); all.push(...rs);
       }
       const vals=all.map(x=>x.r), e=vals.length?vals.reduce((a,b)=>a+b,0)/vals.length:0, p=pf(vals);
       const pass=all.length>=30&&folds.every(x=>x.length>=10)&&e>0.15&&folds.every(x=>pf(x.map(t=>t.r))>1.10);
