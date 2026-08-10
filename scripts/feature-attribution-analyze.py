@@ -79,6 +79,27 @@ def bootstrap_ci(values: List[float], stat: Callable[[List[float]], float], n_it
     return (stats[lo], stats[hi])
 
 
+def mean(values: List[float]) -> float:
+    return sum(values) / len(values) if values else float("nan")
+
+
+def median(values: List[float]) -> float:
+    if not values:
+        return float("nan")
+    s = sorted(values)
+    n = len(s)
+    if n % 2 == 1:
+        return s[n // 2]
+    return (s[n // 2 - 1] + s[n // 2]) / 2
+
+
+def stddev(values: List[float]) -> float:
+    if len(values) < 2:
+        return float("nan")
+    m = mean(values)
+    return math.sqrt(sum((x - m) ** 2 for x in values) / (len(values) - 1))
+
+
 def quantile_cut(values: List[float], n_bins: int = 10) -> List[tuple]:
     """Return list of (lo, hi) thresholds for each quantile bin."""
     if len(values) < n_bins:
@@ -121,7 +142,10 @@ def bucket_by_feature(records: List[Dict[str, Any]], feature: str, n_bins: int =
             "P3": avg("P3"),
             "grossExpectedR": avg("grossExpectedR"),
             "netExpectedR": avg("netExpectedR"),
+            "netExpectedR_median": median(net_vals),
+            "netExpectedR_std": stddev(net_vals),
             "netExpectedR_ci95": f"[{ci_lo:.4f}, {ci_hi:.4f}]",
+            "selection": "post-hoc (data-driven quantile)",
         })
     return rows
 
@@ -166,15 +190,20 @@ def conditional_pockets(records: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
             continue
         n = len(bucket)
         net_vals = [r.get("netExpectedR", 0) or 0 for r in bucket]
-        avg_net = sum(net_vals) / n
+        avg_net = mean(net_vals)
         ci_lo, ci_hi = bootstrap_ci(net_vals, lambda xs: sum(xs) / len(xs))
         rows.append({
             "hypothesis": name,
             "n": n,
             "avg_P0": sum(r.get("P0", 0) or 0 for r in bucket) / n,
+            "avg_P1": sum(r.get("P1", 0) or 0 for r in bucket) / n,
+            "avg_P2": sum(r.get("P2", 0) or 0 for r in bucket) / n,
             "avg_P3": sum(r.get("P3", 0) or 0 for r in bucket) / n,
             "avg_netExpectedR": avg_net,
+            "median_netExpectedR": median(net_vals),
+            "std_netExpectedR": stddev(net_vals),
             "ci95_netExpectedR": f"[{ci_lo:.4f}, {ci_hi:.4f}]",
+            "selection": "pre-specified (hypothesis list)",
         })
     rows.sort(key=lambda x: x["avg_netExpectedR"], reverse=True)
     return rows
@@ -278,22 +307,26 @@ def main():
         if not rows:
             continue
         print(f"### {feat}\n")
-        print("| Decile | n | Range | P0 | P1 | P2 | P3 | grossR | netR | 95% CI netR |")
-        print("|---|---|---|---|---|---|---|---|---|---|")
+        print("| Decile | n | Range | P0 | P1 | P2 | P3 | grossR | netR | median | std | 95% CI netR | selection |")
+        print("|---|---|---|---|---|---|---|---|---|---|---|---|---|")
         for row in rows:
             print(f"| {row['bin']} | {row['n']} | {row['range']} | "
                   f"{row['P0']:.3f} | {row['P1']:.3f} | {row['P2']:.3f} | {row['P3']:.3f} | "
-                  f"{row['grossExpectedR']:.4f} | {row['netExpectedR']:.4f} | {row['netExpectedR_ci95']} |")
+                  f"{row['grossExpectedR']:.4f} | {row['netExpectedR']:.4f} | "
+                  f"{row['netExpectedR_median']:.4f} | {row['netExpectedR_std']:.4f} | "
+                  f"{row['netExpectedR_ci95']} | {row['selection']} |")
         print()
 
     # Conditional pockets
     print("## Conditional Positive Pockets\n")
     pockets = conditional_pockets(sig)
-    print("| Hypothesis | n | avg P0 | avg P3 | avg netR | 95% CI netR |")
-    print("|---|---|---|---|---|---|")
+    print("| Hypothesis | n | avg P0 | avg P1 | avg P2 | avg P3 | avg netR | median | std | 95% CI netR | selection |")
+    print("|---|---|---|---|---|---|---|---|---|---|---|")
     for row in pockets:
-        print(f"| {row['hypothesis']} | {row['n']} | {row['avg_P0']:.3f} | {row['avg_P3']:.3f} | "
-              f"{row['avg_netExpectedR']:.4f} | {row['ci95_netExpectedR']} |")
+        print(f"| {row['hypothesis']} | {row['n']} | "
+              f"{row['avg_P0']:.3f} | {row['avg_P1']:.3f} | {row['avg_P2']:.3f} | {row['avg_P3']:.3f} | "
+              f"{row['avg_netExpectedR']:.4f} | {row['median_netExpectedR']:.4f} | {row['std_netExpectedR']:.4f} | "
+              f"{row['ci95_netExpectedR']} | {row['selection']} |")
     print()
 
     # Categorical summaries
@@ -315,7 +348,9 @@ def main():
 
     print("## Interpretation Notes\n")
     print("- Spearman/Pearson magnitudes above ~0.10 with n>100 begin to be interesting; above ~0.20 is material.")
-    print("- Decile buckets where the 95% CI of netExpectedR is entirely above zero are the strongest evidence of a conditional edge.")
+    print("- Decile buckets are post-hoc (data-driven quantiles). A positive bucket must be confirmed on untouched OOS data before it is treated as validated.")
+    print("- Conditional pockets from the fixed hypothesis list are pre-specified, but still require OOS confirmation.")
+    print("- Do not treat a pocket as an edge unless its 95% CI of netExpectedR is entirely above zero and the story was specified before peeking at the outcome.")
     print("- If no feature or combination shows a clearly positive netExpectedR with a tight CI, the current feature set likely lacks predictive information for this execution model.")
 
 

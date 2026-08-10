@@ -3,6 +3,7 @@ import type { MarketBar } from './marketData';
 import type { StrategyConfig, StrategySignal } from './strategyV32';
 import { TRADING_CONFIG } from './tradingConfig';
 import { calculateCostInR } from '../engine/units';
+import { runnerProtectedStop } from './runnerProtection';
 import {
   evaluateProductionStrategy,
   MIN_INDEPENDENT_SAMPLES,
@@ -122,6 +123,8 @@ export interface DiagnosticRecord {
   pathGrossR?: Record<'P0' | 'P1' | 'P2' | 'P3', number>;
   pathCostR?: Record<'P0' | 'P1' | 'P2' | 'P3', number>;
   pathNetR?: Record<'P0' | 'P1' | 'P2' | 'P3', number>;
+  outcomeCounts?: Record<EpisodeOutcome, number>;
+  timeoutRate?: number;
 }
 
 const vwap = (bars: MarketBar[]) => {
@@ -181,8 +184,25 @@ export interface PathStats {
   netR: number;
 }
 
+/**
+ * Raw execution outcome for a single episode.
+ * STOP_k  = stop-loss hit after k targets had been reached.
+ * TP3     = all three targets filled (100% position closed).
+ * TIMEOUT_k = horizon expired after k targets had been reached.
+ */
+export type EpisodeOutcome =
+  | 'STOP_0'
+  | 'STOP_1'
+  | 'STOP_2'
+  | 'TP3'
+  | 'TIMEOUT_0'
+  | 'TIMEOUT_1'
+  | 'TIMEOUT_2';
+
 export interface EpisodeResult extends PathStats {
-  path: 'P0' | 'P1' | 'P2' | 'P3';
+  outcome: EpisodeOutcome;
+  stage: number;
+  isTimeout: boolean;
 }
 
 export interface FourPathResult {
@@ -197,42 +217,32 @@ export interface FourPathResult {
   pathGrossR: Record<'P0' | 'P1' | 'P2' | 'P3', number>;
   pathCostR: Record<'P0' | 'P1' | 'P2' | 'P3', number>;
   pathNetR: Record<'P0' | 'P1' | 'P2' | 'P3', number>;
+  /** Explicit counts for every raw outcome, including timeouts. */
+  outcomeCounts: Record<EpisodeOutcome, number>;
+  /** Fraction of episodes that ended by timeout rather than stop/TP3. */
+  timeoutRate: number;
 }
 
-// Replicate src/lib/runnerProtection.ts constants and logic exactly.
-const RUNNER_BREAKEVEN_TARGET_FRACTION = 0.10;
-const RUNNER_LOCK_TARGET_FRACTION = 0.20;
-const RUNNER_LOCK_KEEP_TARGET_FRACTION = 0.05;
-const RUNNER_TRAIL_START_TARGET_FRACTION = 0.30;
-const RUNNER_TRAIL_GIVEBACK_TARGET_FRACTION = 0.10;
-const RUNNER_COST_BUFFER_TARGET_FRACTION = 0.003;
-
-function runnerStopRatchet(
-  runnerSide: 1 | -1,
-  entry: number,
-  finalTargetPrice: number,
-  currentStop: number,
-  high: number,
-  low: number,
-): number {
-  const targetDistance = Math.abs(finalTargetPrice - entry);
-  if (!(targetDistance > 0) || ![entry, finalTargetPrice, currentStop, high, low].every(Number.isFinite)) {
-    return currentStop;
+/**
+ * Map a raw episode outcome into the four-path summary bucket used for
+ * attribution. TIMEOUT_k is grouped with STOP_k because both represent the
+ * realized PnL at stage k; the empirical gross/cost/net R capture the exact
+ * exit price (stop fill or timeout close).
+ */
+function outcomeToPath(outcome: EpisodeOutcome): 'P0' | 'P1' | 'P2' | 'P3' {
+  switch (outcome) {
+    case 'STOP_0':
+    case 'TIMEOUT_0':
+      return 'P0';
+    case 'STOP_1':
+    case 'TIMEOUT_1':
+      return 'P1';
+    case 'STOP_2':
+    case 'TIMEOUT_2':
+      return 'P2';
+    case 'TP3':
+      return 'P3';
   }
-
-  const favorable = runnerSide === 1 ? high - entry : entry - low;
-  const favorableTargetFraction = favorable / targetDistance;
-  let desired = currentStop;
-
-  if (favorableTargetFraction >= RUNNER_TRAIL_START_TARGET_FRACTION) {
-    desired = entry + runnerSide * (favorableTargetFraction - RUNNER_TRAIL_GIVEBACK_TARGET_FRACTION) * targetDistance;
-  } else if (favorableTargetFraction >= RUNNER_LOCK_TARGET_FRACTION) {
-    desired = entry + runnerSide * RUNNER_LOCK_KEEP_TARGET_FRACTION * targetDistance;
-  } else if (favorableTargetFraction >= RUNNER_BREAKEVEN_TARGET_FRACTION) {
-    desired = entry + runnerSide * RUNNER_COST_BUFFER_TARGET_FRACTION * targetDistance;
-  }
-
-  return runnerSide === 1 ? Math.max(currentStop, desired) : Math.min(currentStop, desired);
 }
 
 /**
@@ -242,7 +252,7 @@ function runnerStopRatchet(
  *   - stop-first same-candle ordering
  *   - TP1/TP2/TP3 partial exits with target slippage and per-exit fees
  *   - breakeven stop after TP1, +0.5R stop after TP2
- *   - runner-protected stop ratchet
+ *   - runner-protected stop ratchet (uses imported runnerProtectedStop)
  *   - timeout at horizonBars
  */
 export function simulateSingleEpisode(
@@ -276,7 +286,7 @@ export function simulateSingleEpisode(
   let realizedFees = 0;
   let simulatedStop = initialStop;
   let stage = 0;
-  let outcome: 'P0' | 'P1' | 'P2' | 'P3' = 'P0';
+  let outcome: EpisodeOutcome = 'TIMEOUT_0';
 
   for (let j = 1; j <= horizonBars; j++) {
     const b = completed[signalIndex + j];
@@ -288,7 +298,7 @@ export function simulateSingleEpisode(
       const exit = simulatedStop * (1 - runnerSide * slip);
       realizedGross += runnerSide * (exit - entry) * remainingQty;
       realizedFees += (Math.abs(entry * remainingQty) + Math.abs(exit * remainingQty)) * fee;
-      outcome = `P${stage}` as 'P0' | 'P1' | 'P2' | 'P3';
+      outcome = stage === 0 ? 'STOP_0' : stage === 1 ? 'STOP_1' : 'STOP_2';
       break;
     }
 
@@ -311,28 +321,28 @@ export function simulateSingleEpisode(
       else if (stage === 2) simulatedStop = entry + runnerSide * stopDistance * 0.5;
 
       if (remainingQty <= Math.max(initialQty * 1e-9, 1e-12)) {
-        outcome = 'P3';
+        outcome = 'TP3';
         break;
       }
     }
 
-    if (outcome === 'P3') break;
+    if (outcome === 'TP3') break;
 
-    // 3. Runner protection ratchet after target/stop processing.
-    simulatedStop = runnerStopRatchet(runnerSide, entry, finalTargetPrice, simulatedStop, b.high, b.low);
+    // 3. Runner protection ratchet after target/stop processing (real impl).
+    simulatedStop = runnerProtectedStop(runnerSide, entry, finalTargetPrice, simulatedStop, b.high, b.low);
 
     // 4. Timeout at horizon end.
     if (j === horizonBars) {
       const exit = b.close * (1 - runnerSide * slip);
       realizedGross += runnerSide * (exit - entry) * remainingQty;
       realizedFees += (Math.abs(entry * remainingQty) + Math.abs(exit * remainingQty)) * fee;
-      outcome = `P${stage}` as 'P0' | 'P1' | 'P2' | 'P3';
+      outcome = stage === 0 ? 'TIMEOUT_0' : stage === 1 ? 'TIMEOUT_1' : 'TIMEOUT_2';
     }
   }
 
   const grossR = realizedGross / stopDistance;
   const costR = realizedFees / stopDistance;
-  return { path: outcome, grossR, costR, netR: grossR - costR };
+  return { outcome, stage, isTimeout: outcome.startsWith('TIMEOUT'), grossR, costR, netR: grossR - costR };
 }
 
 /**
@@ -366,9 +376,14 @@ export function simulateFourPaths(
   let p2 = 0;
   let p3 = 0;
   let samples = 0;
+  let timeouts = 0;
   const pathGross: Record<'P0' | 'P1' | 'P2' | 'P3', number> = { P0: 0, P1: 0, P2: 0, P3: 0 };
   const pathCost: Record<'P0' | 'P1' | 'P2' | 'P3', number> = { P0: 0, P1: 0, P2: 0, P3: 0 };
   const pathNet: Record<'P0' | 'P1' | 'P2' | 'P3', number> = { P0: 0, P1: 0, P2: 0, P3: 0 };
+  const outcomeCounts: Record<EpisodeOutcome, number> = {
+    STOP_0: 0, STOP_1: 0, STOP_2: 0, TP3: 0,
+    TIMEOUT_0: 0, TIMEOUT_1: 0, TIMEOUT_2: 0,
+  };
 
   for (let i = lastStart - 1; i >= firstStart; i -= horizonBars) {
     const sampleAtr = atrAt(completed, i + 1);
@@ -390,7 +405,11 @@ export function simulateFourPaths(
     if (!episode) continue;
 
     samples++;
-    const { path, grossR, costR, netR } = episode;
+    outcomeCounts[episode.outcome]++;
+    if (episode.isTimeout) timeouts++;
+
+    const path = outcomeToPath(episode.outcome);
+    const { grossR, costR, netR } = episode;
     if (path === 'P0') { p0++; pathGross.P0 += grossR; pathCost.P0 += costR; pathNet.P0 += netR; }
     else if (path === 'P1') { p1++; pathGross.P1 += grossR; pathCost.P1 += costR; pathNet.P1 += netR; }
     else if (path === 'P2') { p2++; pathGross.P2 += grossR; pathCost.P2 += costR; pathNet.P2 += netR; }
@@ -428,7 +447,10 @@ export function simulateFourPaths(
   const expectedTransactionCostR = P0 * pathCostR.P0 + P1 * pathCostR.P1 + P2 * pathCostR.P2 + P3 * pathCostR.P3;
   const netExpectedR = grossExpectedR - expectedTransactionCostR;
 
-  return { P0, P1, P2, P3, samples, grossExpectedR, expectedTransactionCostR, netExpectedR, pathGrossR, pathCostR, pathNetR };
+  return {
+    P0, P1, P2, P3, samples, grossExpectedR, expectedTransactionCostR, netExpectedR,
+    pathGrossR, pathCostR, pathNetR, outcomeCounts, timeoutRate: timeouts / samples,
+  };
 }
 
 export function evaluateWithDiagnostics(
