@@ -27,7 +27,7 @@ function independentPathCapacity(input:MarketBar[],side:Side,currentAtr:number,c
  const lastStart=completed.length-horizonBars,firstStart=Math.max(20,lastStart-requiredLookback);
  if(lastStart<=firstStart)return unavailable;
  const riskAtr=currentRisk/currentAtr;if(!Number.isFinite(riskAtr)||riskAtr<=0)return unavailable;
- const runnerSide=side==='LONG'?1:-1,excursions:number[]=[],targetHits:number[]=[];
+ const runnerSide=side==='LONG'?1:-1,excursions:number[]=[];
  let samples=0,targetBeforeStop=0;
  for(let i=lastStart-1;i>=firstStart;i-=horizonBars){
   const sampleAtr=atrAt(completed,i+1);if(!(sampleAtr>0)||!Number.isFinite(sampleAtr))continue;
@@ -44,7 +44,7 @@ function independentPathCapacity(input:MarketBar[],side:Side,currentAtr:number,c
    if(hitTarget){outcome='TARGET';break;}
    simulatedStop=runnerProtectedStop(runnerSide,start,simulatedTarget,simulatedStop,b.high,b.low);
   }
-  excursions.push(mfe/sampleAtr);targetHits.push(outcome==='TARGET'?1:0);samples++;if(outcome==='TARGET')targetBeforeStop++;
+  excursions.push(mfe/sampleAtr);samples++;if(outcome==='TARGET')targetBeforeStop++;
  }
  if(samples<MIN_INDEPENDENT_SAMPLES)return unavailable;
  const capacityAtr=percentile(excursions,capacityQuantile);
@@ -100,7 +100,7 @@ export function evaluateProductionStrategy(input:number[]|MarketBar[],config:Par
   return (rangeRegime?18:0)+(reversion?25:0)+((long?prevRsi<=32:prevRsi>=68)?13:0)+((long?rrsi>=30&&rrsi<=48:rrsi<=70&&rrsi>=52)?10:0)+((long?entry>=lower:entry<=upper)?9:0)+(bar?9:0)+(costAware?6:0)+(Math.abs(entry-mid20)<=a*1.75?5:0)+(dir>=3?5:0);
  };
  const candidates:{side:Side;family:string;score:number}[]=[];
- for(const side of ['LONG','SHORT'] as Side[]){const directional=side==='LONG'?directionalLong:directionalShort;if(directional){for(const family of ['trend','breakout','compression'] as const)candidates.push({side,family,score:familyScore(family,side)});}if(rangeRegime)candidates.push({side,family:'reversion',score:familyScore('reversion',side));}
+ for(const side of ['LONG','SHORT'] as Side[]){const directional=side==='LONG'?directionalLong:directionalShort;if(directional){for(const family of ['trend','breakout','compression'] as const)candidates.push({side,family,score:familyScore(family,side)});}if(rangeRegime)candidates.push({side,family:'reversion',score:familyScore('reversion',side)});}
  candidates.sort((x,y)=>y.score-x.score);
  const minScore=Math.max(TRADING_CONFIG.minScore,cfg.minScore??TRADING_CONFIG.minScore),winner=candidates.find(x=>x.score>=minScore),score=winner?.score??(candidates[0]?.score??0);
  if(cfg.funnel){for(const c of candidates){if(c.family==='trend')cfg.funnel.familyCandidatesTrend++;if(c.family==='breakout')cfg.funnel.familyCandidatesBreakout++;if(c.family==='compression')cfg.funnel.familyCandidatesCompression++;if(c.family==='reversion')cfg.funnel.familyCandidatesReversion++;}}
