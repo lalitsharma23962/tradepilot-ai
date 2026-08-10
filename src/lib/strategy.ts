@@ -1,1 +1,1 @@
-export * from './strategyV35';
+export * from './strategyV37';
