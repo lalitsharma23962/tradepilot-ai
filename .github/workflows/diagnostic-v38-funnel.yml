@@ -15,4 +15,8 @@ jobs:
           node-version: 22
           cache: npm
       - run: npm ci
+      - run: npx -y tsx scripts/validate-diagnostic-vs-simulator.ts
       - run: npx -y tsx scripts/diagnose-v38-funnel.ts
+      - run: npx -y tsx scripts/feature-attribution-collect.ts
+      - run: python3 -m py_compile scripts/feature-attribution-analyze.py
+      - run: python3 scripts/feature-attribution-analyze.py
