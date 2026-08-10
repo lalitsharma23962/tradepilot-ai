@@ -1,5 +1,7 @@
 name: v38 sensitivity audit
 on:
+  pull_request:
+    branches: [main]
   push:
     branches: [diagnostic/v38-funnel-1h-4h]
 jobs:
