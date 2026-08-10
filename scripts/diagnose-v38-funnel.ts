@@ -51,5 +51,5 @@ for(const interval of ['1h','4h'] as const){
    funnel,
   } as any);
  }
- printFunnel(interval,f,yearBars);
+ printFunnel(interval,funnel,yearBars);
 }
