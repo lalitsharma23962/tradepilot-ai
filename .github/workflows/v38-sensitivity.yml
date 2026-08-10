@@ -15,4 +15,4 @@ jobs:
           node-version: 20
           cache: npm
       - run: npm ci
-      - run: npx tsx scripts/run-v38-sensitivity-direct.ts
+      - run: npx tsx scripts/run-v38-sensitivity.ts
