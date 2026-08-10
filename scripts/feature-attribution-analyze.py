@@ -115,6 +115,18 @@ def quantile_cut(values: List[float], n_bins: int = 10) -> List[tuple]:
     return cuts
 
 
+def share_of_outcome(records: List[Dict[str, Any]], outcome: str) -> List[float]:
+    shares = []
+    for r in records:
+        counts = r.get("outcomeCounts")
+        samples = r.get("samples")
+        if counts and isinstance(counts, dict) and samples and samples > 0 and outcome in counts:
+            shares.append(counts[outcome] / samples)
+        else:
+            shares.append(0.0)
+    return shares
+
+
 def bucket_by_feature(records: List[Dict[str, Any]], feature: str, n_bins: int = 10) -> List[Dict[str, Any]]:
     values = [r[feature] for r in records if feature in r and r[feature] is not None and math.isfinite(r[feature])]
     if len(values) < n_bins * 3:
@@ -140,6 +152,7 @@ def bucket_by_feature(records: List[Dict[str, Any]], feature: str, n_bins: int =
             "P1": avg("P1"),
             "P2": avg("P2"),
             "P3": avg("P3"),
+            "timeoutRate": avg("timeoutRate"),
             "grossExpectedR": avg("grossExpectedR"),
             "netExpectedR": avg("netExpectedR"),
             "netExpectedR_median": median(net_vals),
@@ -199,6 +212,7 @@ def conditional_pockets(records: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
             "avg_P1": sum(r.get("P1", 0) or 0 for r in bucket) / n,
             "avg_P2": sum(r.get("P2", 0) or 0 for r in bucket) / n,
             "avg_P3": sum(r.get("P3", 0) or 0 for r in bucket) / n,
+            "avg_timeoutRate": sum(r.get("timeoutRate", 0) or 0 for r in bucket) / n,
             "avg_netExpectedR": avg_net,
             "median_netExpectedR": median(net_vals),
             "std_netExpectedR": stddev(net_vals),
@@ -252,11 +266,19 @@ def main():
         print("No accepted signals found. Cannot perform attribution.")
         return
 
-    # Overall path distribution
+    # Overall path distribution (timeouts reported separately, not merged into P0/P1/P2)
     print("## Overall Path Distribution\n")
+    print("Four execution-path buckets (STOP_0, STOP_1, STOP_2, TP3):\n")
     for k in ["P0", "P1", "P2", "P3"]:
         avg = sum(r.get(k, 0) or 0 for r in sig) / len(sig)
         print(f"- {k}: {avg:.3%}")
+    print(f"- timeoutRate: {sum(r.get('timeoutRate', 0) or 0 for r in sig) / len(sig):.3%}")
+    print()
+    print("Raw outcome shares (including separate timeout stages):\n")
+    for outcome in ["STOP_0", "STOP_1", "STOP_2", "TP3", "TIMEOUT_0", "TIMEOUT_1", "TIMEOUT_2"]:
+        shares = share_of_outcome(sig, outcome)
+        print(f"- {outcome}: {mean(shares):.3%}")
+    print()
     net_vals = [r.get("netExpectedR", 0) or 0 for r in sig]
     print(f"- grossExpectedR: {sum(r.get('grossExpectedR', 0) or 0 for r in sig) / len(sig):.4f}")
     print(f"- expectedTransactionCostR: {sum(r.get('expectedTransactionCostR', 0) or 0 for r in sig) / len(sig):.4f}")
@@ -307,11 +329,12 @@ def main():
         if not rows:
             continue
         print(f"### {feat}\n")
-        print("| Decile | n | Range | P0 | P1 | P2 | P3 | grossR | netR | median | std | 95% CI netR | selection |")
-        print("|---|---|---|---|---|---|---|---|---|---|---|---|---|")
+        print("| Decile | n | Range | P0 | P1 | P2 | P3 | timeoutRate | grossR | netR | median | std | 95% CI netR | selection |")
+        print("|---|---|---|---|---|---|---|---|---|---|---|---|---|---|")
         for row in rows:
             print(f"| {row['bin']} | {row['n']} | {row['range']} | "
                   f"{row['P0']:.3f} | {row['P1']:.3f} | {row['P2']:.3f} | {row['P3']:.3f} | "
+                  f"{row['timeoutRate']:.3f} | "
                   f"{row['grossExpectedR']:.4f} | {row['netExpectedR']:.4f} | "
                   f"{row['netExpectedR_median']:.4f} | {row['netExpectedR_std']:.4f} | "
                   f"{row['netExpectedR_ci95']} | {row['selection']} |")
@@ -320,11 +343,12 @@ def main():
     # Conditional pockets
     print("## Conditional Positive Pockets\n")
     pockets = conditional_pockets(sig)
-    print("| Hypothesis | n | avg P0 | avg P1 | avg P2 | avg P3 | avg netR | median | std | 95% CI netR | selection |")
-    print("|---|---|---|---|---|---|---|---|---|---|---|")
+    print("| Hypothesis | n | avg P0 | avg P1 | avg P2 | avg P3 | timeoutRate | avg netR | median | std | 95% CI netR | selection |")
+    print("|---|---|---|---|---|---|---|---|---|---|---|---|")
     for row in pockets:
         print(f"| {row['hypothesis']} | {row['n']} | "
               f"{row['avg_P0']:.3f} | {row['avg_P1']:.3f} | {row['avg_P2']:.3f} | {row['avg_P3']:.3f} | "
+              f"{row['avg_timeoutRate']:.3f} | "
               f"{row['avg_netExpectedR']:.4f} | {row['median_netExpectedR']:.4f} | {row['std_netExpectedR']:.4f} | "
               f"{row['ci95_netExpectedR']} | {row['selection']} |")
     print()
@@ -336,13 +360,14 @@ def main():
         for r in sig:
             groups[r.get(key, "unknown")].append(r)
         print(f"### {key}\n")
-        print("| Group | n | avg P0 | avg P3 | avg netR |")
-        print("|---|---|---|---|---|")
+        print("| Group | n | avg P0 | avg P3 | timeoutRate | avg netR |")
+        print("|---|---|---|---|---|---|")
         for group, bucket in sorted(groups.items(), key=lambda x: sum(r.get("netExpectedR", 0) or 0 for r in x[1]) / len(x[1]), reverse=True):
             n = len(bucket)
             print(f"| {group} | {n} | "
                   f"{sum(r.get('P0', 0) or 0 for r in bucket) / n:.3f} | "
                   f"{sum(r.get('P3', 0) or 0 for r in bucket) / n:.3f} | "
+                  f"{sum(r.get('timeoutRate', 0) or 0 for r in bucket) / n:.3f} | "
                   f"{sum(r.get('netExpectedR', 0) or 0 for r in bucket) / n:.4f} |")
         print()
 

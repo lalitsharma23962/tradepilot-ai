@@ -117,12 +117,16 @@ export interface DiagnosticRecord {
   P2?: number;
   P3?: number;
   samples?: number;
+  pathSamples?: number;
   grossExpectedR?: number;
   expectedTransactionCostR?: number;
   netExpectedR?: number;
   pathGrossR?: Record<'P0' | 'P1' | 'P2' | 'P3', number>;
   pathCostR?: Record<'P0' | 'P1' | 'P2' | 'P3', number>;
   pathNetR?: Record<'P0' | 'P1' | 'P2' | 'P3', number>;
+  timeoutGrossR?: number;
+  timeoutCostR?: number;
+  timeoutNetR?: number;
   outcomeCounts?: Record<EpisodeOutcome, number>;
   timeoutRate?: number;
 }
@@ -211,38 +215,21 @@ export interface FourPathResult {
   P2: number;
   P3: number;
   samples: number;
+  /** Episodes assigned to the four execution paths (STOP_0/1/2 or TP3), excluding timeouts. */
+  pathSamples: number;
   grossExpectedR: number;
   expectedTransactionCostR: number;
   netExpectedR: number;
   pathGrossR: Record<'P0' | 'P1' | 'P2' | 'P3', number>;
   pathCostR: Record<'P0' | 'P1' | 'P2' | 'P3', number>;
   pathNetR: Record<'P0' | 'P1' | 'P2' | 'P3', number>;
+  timeoutGrossR: number;
+  timeoutCostR: number;
+  timeoutNetR: number;
   /** Explicit counts for every raw outcome, including timeouts. */
   outcomeCounts: Record<EpisodeOutcome, number>;
   /** Fraction of episodes that ended by timeout rather than stop/TP3. */
   timeoutRate: number;
-}
-
-/**
- * Map a raw episode outcome into the four-path summary bucket used for
- * attribution. TIMEOUT_k is grouped with STOP_k because both represent the
- * realized PnL at stage k; the empirical gross/cost/net R capture the exact
- * exit price (stop fill or timeout close).
- */
-function outcomeToPath(outcome: EpisodeOutcome): 'P0' | 'P1' | 'P2' | 'P3' {
-  switch (outcome) {
-    case 'STOP_0':
-    case 'TIMEOUT_0':
-      return 'P0';
-    case 'STOP_1':
-    case 'TIMEOUT_1':
-      return 'P1';
-    case 'STOP_2':
-    case 'TIMEOUT_2':
-      return 'P2';
-    case 'TP3':
-      return 'P3';
-  }
 }
 
 /**
@@ -376,10 +363,14 @@ export function simulateFourPaths(
   let p2 = 0;
   let p3 = 0;
   let samples = 0;
+  let pathSamples = 0;
   let timeouts = 0;
   const pathGross: Record<'P0' | 'P1' | 'P2' | 'P3', number> = { P0: 0, P1: 0, P2: 0, P3: 0 };
   const pathCost: Record<'P0' | 'P1' | 'P2' | 'P3', number> = { P0: 0, P1: 0, P2: 0, P3: 0 };
   const pathNet: Record<'P0' | 'P1' | 'P2' | 'P3', number> = { P0: 0, P1: 0, P2: 0, P3: 0 };
+  let timeoutGross = 0;
+  let timeoutCost = 0;
+  let timeoutNet = 0;
   const outcomeCounts: Record<EpisodeOutcome, number> = {
     STOP_0: 0, STOP_1: 0, STOP_2: 0, TP3: 0,
     TIMEOUT_0: 0, TIMEOUT_1: 0, TIMEOUT_2: 0,
@@ -406,14 +397,19 @@ export function simulateFourPaths(
 
     samples++;
     outcomeCounts[episode.outcome]++;
-    if (episode.isTimeout) timeouts++;
+    const { outcome, grossR, costR, netR } = episode;
 
-    const path = outcomeToPath(episode.outcome);
-    const { grossR, costR, netR } = episode;
-    if (path === 'P0') { p0++; pathGross.P0 += grossR; pathCost.P0 += costR; pathNet.P0 += netR; }
-    else if (path === 'P1') { p1++; pathGross.P1 += grossR; pathCost.P1 += costR; pathNet.P1 += netR; }
-    else if (path === 'P2') { p2++; pathGross.P2 += grossR; pathCost.P2 += costR; pathNet.P2 += netR; }
-    else if (path === 'P3') { p3++; pathGross.P3 += grossR; pathCost.P3 += costR; pathNet.P3 += netR; }
+    if (outcome === 'STOP_0') { p0++; pathGross.P0 += grossR; pathCost.P0 += costR; pathNet.P0 += netR; pathSamples++; }
+    else if (outcome === 'STOP_1') { p1++; pathGross.P1 += grossR; pathCost.P1 += costR; pathNet.P1 += netR; pathSamples++; }
+    else if (outcome === 'STOP_2') { p2++; pathGross.P2 += grossR; pathCost.P2 += costR; pathNet.P2 += netR; pathSamples++; }
+    else if (outcome === 'TP3') { p3++; pathGross.P3 += grossR; pathCost.P3 += costR; pathNet.P3 += netR; pathSamples++; }
+    else {
+      // TIMEOUT_* are real economic outcomes but are not execution-path buckets.
+      timeouts++;
+      timeoutGross += grossR;
+      timeoutCost += costR;
+      timeoutNet += netR;
+    }
   }
 
   if (samples < MIN_INDEPENDENT_SAMPLES) return null;
@@ -443,13 +439,21 @@ export function simulateFourPaths(
     P3: avg(pathNet.P3, p3),
   };
 
-  const grossExpectedR = P0 * pathGrossR.P0 + P1 * pathGrossR.P1 + P2 * pathGrossR.P2 + P3 * pathGrossR.P3;
-  const expectedTransactionCostR = P0 * pathCostR.P0 + P1 * pathCostR.P1 + P2 * pathCostR.P2 + P3 * pathCostR.P3;
-  const netExpectedR = grossExpectedR - expectedTransactionCostR;
+  const timeoutGrossR = avg(timeoutGross, timeouts);
+  const timeoutCostR = avg(timeoutCost, timeouts);
+  const timeoutNetR = avg(timeoutNet, timeouts);
+
+  // Expected R is over ALL realized episodes, including timeouts.
+  const grossExpectedR = (pathGross.P0 + pathGross.P1 + pathGross.P2 + pathGross.P3 + timeoutGross) / samples;
+  const expectedTransactionCostR = (pathCost.P0 + pathCost.P1 + pathCost.P2 + pathCost.P3 + timeoutCost) / samples;
+  const netExpectedR = (pathNet.P0 + pathNet.P1 + pathNet.P2 + pathNet.P3 + timeoutNet) / samples;
 
   return {
-    P0, P1, P2, P3, samples, grossExpectedR, expectedTransactionCostR, netExpectedR,
-    pathGrossR, pathCostR, pathNetR, outcomeCounts, timeoutRate: timeouts / samples,
+    P0, P1, P2, P3, samples, pathSamples,
+    grossExpectedR, expectedTransactionCostR, netExpectedR,
+    pathGrossR, pathCostR, pathNetR,
+    timeoutGrossR, timeoutCostR, timeoutNetR,
+    outcomeCounts, timeoutRate: timeouts / samples,
   };
 }
 
