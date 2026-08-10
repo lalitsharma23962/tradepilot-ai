@@ -16,4 +16,5 @@ jobs:
           cache: npm
       - run: npm ci
       - run: npm run typecheck
+      - run: npx -y tsx scripts/validate-diagnostic-vs-simulator.ts
       - run: npm run build
