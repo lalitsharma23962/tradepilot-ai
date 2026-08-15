@@ -1,13 +1,13 @@
-name: CI
+name: v38 Funnel Diagnostic
 
 on:
-  pull_request:
   push:
-    branches: [main]
+    branches: [diagnostic/v38-funnel-1h-4h]
 
 jobs:
-  build:
+  diagnose:
     runs-on: ubuntu-latest
+    timeout-minutes: 25
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
@@ -15,9 +15,8 @@ jobs:
           node-version: 22
           cache: npm
       - run: npm ci
-      - run: npm run typecheck
       - run: npx -y tsx scripts/validate-diagnostic-vs-simulator.ts
+      - run: npx -y tsx scripts/diagnose-v38-funnel.ts
       - run: npx -y tsx scripts/feature-attribution-collect.ts
       - run: python3 -m py_compile scripts/feature-attribution-analyze.py
       - run: python3 scripts/feature-attribution-analyze.py
-      - run: npm run build
