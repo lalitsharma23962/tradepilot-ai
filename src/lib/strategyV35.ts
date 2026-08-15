@@ -66,8 +66,8 @@ export function evaluateProductionStrategy(input:number[]|MarketBar[],config:Par
  const atrStopMultiple=cfg.atrStopMultiple??TRADING_CONFIG.atrStopMultiple;
  const rawRisk=side==='LONG'?Math.max(entry-swingLow,a*atrStopMultiple):Math.max(swingHigh-entry,a*atrStopMultiple),minRisk=a*(cfg.minStopAtr??TRADING_CONFIG.minStopAtr),maxRisk=a*(cfg.maxStructuralRiskAtr??TRADING_CONFIG.maxStructuralRiskAtr);
  if(rawRisk<minRisk){if(cfg.funnel)cfg.funnel.rejectedRiskFloor++;return wait(entry,['Structural risk is below the minimum ATR floor'],score);}if(rawRisk>maxRisk){if(cfg.funnel)cfg.funnel.rejectedStructuralStop++;return wait(entry,['Structural risk exceeds the maximum ATR ceiling'],score);}
- const risk=rawRisk,stopPrice=side==='LONG'?entry-risk:entry+risk,costInR=calculateCostInR(entry,stopPrice,cfg.feeBps??TRADING_CONFIG.feeBps,cfg.slippageBps??TRADING_CONFIG.slippageBps);
- if(costInR>0.15){if(cfg.funnel)cfg.funnel.rejectedRiskFloor++;return wait(entry,[`Round-trip friction is ${costInR.toFixed(3)}R, above the 0.15R maximum`],score);}
+ const risk=rawRisk,stopPrice=side==='LONG'?entry-risk:entry+risk,costInR=calculateCostInR(entry,stopPrice,cfg.feeBps??TRADING_CONFIG.feeBps,cfg.slippageBps??TRADING_CONFIG.slippageBps),maxCostFraction=cfg.maxCostFractionOfRisk??TRADING_CONFIG.maxCostFractionOfRisk;
+ if(costInR>maxCostFraction){if(cfg.funnel)cfg.funnel.rejectedCost++;return wait(entry,[`Round-trip friction is ${costInR.toFixed(3)}R, above the ${maxCostFraction.toFixed(3)}R maximum`],score);}
  const capacityBars=cfg.capacityBars??(raw.length?raw:[]),currentAtr=capacityBars.length>=21?atrAt(capacityBars,capacityBars.length):0,horizonBars=Math.max(1,Math.floor(cfg.capacityHorizonBars??DEFAULT_CAPACITY_HORIZON));
  let chosen=null,chosenR=null,chosenEvidence:CapacityEvidence|null=null;
  for(const targetR of TARGET_CANDIDATES){const required=economicHitRate(targetR,costInR),evidence=independentPathCapacity(capacityBars,side,currentAtr,risk,targetR,horizonBars,1-required);if(evidence.capacityPrice>0&&evidence.targetBeforeStopRate>=required){chosen='feasible';chosenR=targetR;chosenEvidence=evidence;break;}}
