@@ -8,7 +8,7 @@ export type StrategySignalV37=StrategySignal&{targets?:StrategyTarget[];finalTar
 function normalize(signal:StrategySignal):StrategySignalV37{
  if(signal.action==='WAIT')return signal;const side=signal.action==='LONG'?1:-1,risk=Math.abs(signal.entry-signal.stopLoss);if(!(risk>0)||!Number.isFinite(risk))return signal;
  const targets=TARGET_LADDER.map(level=>({r:level.r,fraction:level.fraction,price:signal.entry+side*risk*level.r,moveStopToBreakeven:level.moveStopToBreakeven}));const finalTarget=targets.at(-1)!.price;
- return{...signal,strategy:'Production Regime Breakout v38',takeProfit:finalTarget,riskReward:FINAL_TARGET_R,targets,finalTargetR:FINAL_TARGET_R,reasons:[...signal.reasons.filter(x=>!x.toLowerCase().includes('dynamic target')),'Fixed 1:2 risk/reward plan','Profit ladder: 1R / 1.5R / 2R','25% exit at TP1, 25% exit at TP2, 50% exit at TP3','Stop management: breakeven after TP1, +0.5R after TP2']};
+ return{...signal,strategy:'Production Regime Breakout v38',takeProfit:finalTarget,riskReward:FINAL_TARGET_R,targets,finalTargetR:FINAL_TARGET_R,reasons:[...signal.reasons.filter(x=>!x.toLowerCase().includes('dynamic target')),'Fixed 1:2 risk/reward plan','Profit ladder: 0.5R / 1R / 2R','15% exit at TP1, 25% exit at TP2, 60% exit at TP3','Stop management: breakeven after TP1, +0.5R after TP2']};
 }
 export function evaluateProductionStrategy(input:number[]|MarketBar[],config:Partial<StrategyConfig>={}):StrategySignalV37{return normalize(evaluateV38(input,config));}
 export function evaluateResearchStrategy(input:number[]|MarketBar[],config:Partial<StrategyConfig>={}):StrategySignalV37{return normalize(researchV38(input,config));}
