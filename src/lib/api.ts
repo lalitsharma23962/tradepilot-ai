@@ -1,7 +1,7 @@
 import { startEngine, stopEngine, restartEngine, isEngineRunning, getMarketTicks, getAiRecommendation, closePosition, closeAllPositions, resetAccount, getTickCount } from './engineV3';
 import { getAccount, getPositions, getTrades, getPerformance, getSnapshots, getSettings, updateSettings } from './repository';
 import { getValidationGate, setValidationGate } from './db';
-import { runValidation, type BacktestConfig, type ValidationReport } from './backtestV37';
+import { runValidation, type BacktestConfig, type ValidationReport } from './backtestV12';
 export interface ApiResult<T>{ok:boolean;data?:T;error?:string;}
 async function wrap<T>(fn:()=>T|Promise<T>):Promise<ApiResult<T>>{try{return{ok:true,data:await fn()};}catch(err){const message=err instanceof Error?err.message:'Unknown error';console.error('[api] error:',message);return{ok:false,error:message};}}
 export async function health():Promise<ApiResult<{status:string;engine:boolean;ticks:number;db:string}>>{return wrap(()=>({status:'ok',engine:isEngineRunning(),ticks:getTickCount(),db:'pglite'}));}
