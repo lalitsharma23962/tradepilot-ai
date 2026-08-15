@@ -18,7 +18,9 @@ export const TRADING_CONFIG={
   atrStopMultiple:1.5,
   minStopAtr:.65,
   maxStructuralRiskAtr:3.2,
-  maxCostFractionOfRisk:.80,
+  // Keep paper and historical validation on the same explicit friction budget.
+  // This is a filter in units of stop-risk R, not a promise of profitability.
+  maxCostFractionOfRisk:.15,
   swingLookback:5,
   lookback:400,
   paperStartingCapital:50 as number,
@@ -34,7 +36,6 @@ export const TRADING_CONFIG={
   maxDailyLossPct:2,
   maxConsecutiveLosses:4,
   maxAccountDrawdownPct:15,
-  // Binance Spot-supported intervals only. 45m and 3h are not valid Spot kline intervals.
   timeframes:['5m','15m','30m','1h','2h','4h','1d'] as const,
   maxBarsInTrade:{'5m':720,'15m':240,'30m':160,'1h':120,'2h':80,'4h':48,'1d':20} as Record<string,number>,
   capacitySamples:20,
