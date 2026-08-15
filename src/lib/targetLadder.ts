@@ -1,12 +1,11 @@
 export interface TargetLevel{r:number;fraction:number;moveStopToBreakeven?:boolean;}
-/** Fixed production ladder: TP1 0.5R (15%), TP2 1.5R (25%), TP3 3R (60%). 
- * Target: higher asymmetry with tail-end capture */
+/** Fixed production ladder: TP1 0.5R (15%), TP2 1R (25%), TP3 2R (60%). */
 export const TARGET_LADDER:readonly TargetLevel[]=[
   {r:0.5,fraction:0.15,moveStopToBreakeven:true},
-  {r:1.5,fraction:0.25,moveStopToBreakeven:false},
-  {r:3.0,fraction:0.60,moveStopToBreakeven:false},
+  {r:1.0,fraction:0.25,moveStopToBreakeven:false},
+  {r:2.0,fraction:0.60,moveStopToBreakeven:false},
 ] as const;
-export const FINAL_TARGET_R=3;
+export const FINAL_TARGET_R=2;
 export function targetPrice(side:1|-1,entry:number,risk:number,r:number):number{return entry+side*risk*r;}
 /** TP1 -> breakeven; TP2 -> +0.5R; TP3 closes the remainder. */
 export function protectedStopAfterTarget(side:1|-1,entry:number,risk:number,stage:number,currentStop:number):number{
