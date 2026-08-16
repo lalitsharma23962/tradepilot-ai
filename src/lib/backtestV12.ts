@@ -50,6 +50,7 @@ function simulate(c:Candle[],cfg:BacktestConfig,start:number,end:number,capacity
  let equity=cfg.initialCapital;const returns:number[]=[];let open:OpenTrade|null=null;
  const fee=cfg.feeBps/10000,slip=cfg.slippageBps/10000;
  const record=(pnl:number,family:string)=>{returns.push(equity?100*pnl/equity:0);familyReturns?.push({pct:equity?100*pnl/equity:0,family});equity+=pnl;};
+ const finish=(t:OpenTrade,raw:number)=>{const exit=raw*(1-t.side*slip),gross=t.side*(exit-t.entry)*t.remainingQty,fees=(Math.abs(t.entry*t.remainingQty)+Math.abs(exit*t.remainingQty))*fee;record(t.realizedPnl+gross-(t.realizedFees+fees),t.family);if(funnel)funnel.tradesClosed++;open=null;};
  for(let i=Math.max(start,Math.min(LOOKBACK,220));i<end;i++){
   const b=c[i],featureBars=c.slice(Math.max(0,i-LOOKBACK+1),i+1),capacityBars=c.slice(Math.max(0,i-capacityContext),i+1);let closed=false;
   if(funnel)funnel.barsEvaluated++;
@@ -79,13 +80,6 @@ function simulate(c:Candle[],cfg:BacktestConfig,start:number,end:number,capacity
  }
  if(open&&end>Math.max(start,LOOKBACK))finish(open,c[end-1].close);
  return summarize('production',returns,cfg.initialCapital);
-}
-
-function finish(t:OpenTrade,raw:number){
- const exit=raw*(1-t.side*slip),gross=t.side*(exit-t.entry)*t.remainingQty,fees=(Math.abs(t.entry*t.remainingQty)+Math.abs(exit*t.remainingQty))*fee;
- record(t.realizedPnl+gross-(t.realizedFees+fees),t.family);
- if(funnel)funnel.tradesClosed++;
- open=null;
 }
 
 const foldPass=(f:StrategyResult)=>f.trades>=MIN_FOLD_TRADES&&f.returnPct>0&&f.profitFactor>=MIN_PF&&f.maxDrawdownPct<=MAX_DD;
