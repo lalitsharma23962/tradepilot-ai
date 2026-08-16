@@ -50,9 +50,9 @@ function simulate(c:Candle[],cfg:BacktestConfig,start:number,end:number,capacity
  let equity=cfg.initialCapital;const returns:number[]=[];let open:OpenTrade|null=null;
  const fee=cfg.feeBps/10000,slip=cfg.slippageBps/10000;
  const record=(pnl:number,family:string)=>{returns.push(equity?100*pnl/equity:0);familyReturns?.push({pct:equity?100*pnl/equity:0,family});equity+=pnl;};
- const finish=(t:OpenTrade,raw:number)=>{const exit=raw*(1-t.side*slip),gross=t.side*(exit-t.entry)*t.remainingQty,fees=(Math.abs(t.entry*t.remainingQty)+Math.abs(exit*t.remainingQty))*fee;record(t.realizedPnl+gross-(t.realizedFees+fees),t.family);if(funnel)funnel.tradesClosed++;open=null;};
  for(let i=Math.max(start,Math.min(LOOKBACK,220));i<end;i++){
   const b=c[i],featureBars=c.slice(Math.max(0,i-LOOKBACK+1),i+1),capacityBars=c.slice(Math.max(0,i-capacityContext),i+1);let closed=false;
+  if(funnel)funnel.barsEvaluated++;
   if(open){
    open.bars++;
    if(open.side===1?b.low<=open.stop:b.high>=open.stop){finish(open,open.stop);closed=true;}
@@ -68,7 +68,7 @@ function simulate(c:Candle[],cfg:BacktestConfig,start:number,end:number,capacity
    }
   }
   if(!open&&!closed&&i<end-1){
-   const signal=evaluateProductionStrategy(featureBars,{minScore:MIN_SCORE,minRiskReward:2,maxRiskReward:2,lookback:LOOKBACK,feeBps:cfg.feeBps,slippageBps:cfg.slippageBps,minStopAtr:TRADING_CONFIG.minStopAtr,maxStructuralRiskAtr:TRADING_CONFIG.maxStructuralRiskAtr,maxCostFractionOfRisk:TRADING_CONFIG.maxCostFractionOfRisk,swingLookback:TRADING_CONFIG.swingLookback,capacityHorizonBars:cfg.maxBarsInTrade,capacityBars} as any);
+   const signal=evaluateProductionStrategy(featureBars,{minScore:MIN_SCORE,minRiskReward:2,maxRiskReward:2,lookback:LOOKBACK,feeBps:cfg.feeBps,slippageBps:cfg.slippageBps,minStopAtr:TRADING_CONFIG.minStopAtr,maxStructuralRiskAtr:TRADING_CONFIG.maxStructuralRiskAtr,maxCostFractionOfRisk:TRADING_CONFIG.maxCostFractionOfRisk,swingLookback:TRADING_CONFIG.swingLookback,capacityHorizonBars:cfg.maxBarsInTrade,capacityBars,funnel} as any);
    if(signal.action!=='WAIT'){
     if(funnel)funnel.ordersAttempted++;
     const fill=c[i+1],side=signal.action==='LONG'?1:-1,entry=fill.open*(1+side*slip),risk=Math.abs(signal.entry-signal.stopLoss),stop=entry-side*risk;
@@ -79,6 +79,13 @@ function simulate(c:Candle[],cfg:BacktestConfig,start:number,end:number,capacity
  }
  if(open&&end>Math.max(start,LOOKBACK))finish(open,c[end-1].close);
  return summarize('production',returns,cfg.initialCapital);
+}
+
+function finish(t:OpenTrade,raw:number){
+ const exit=raw*(1-t.side*slip),gross=t.side*(exit-t.entry)*t.remainingQty,fees=(Math.abs(t.entry*t.remainingQty)+Math.abs(exit*t.remainingQty))*fee;
+ record(t.realizedPnl+gross-(t.realizedFees+fees),t.family);
+ if(funnel)funnel.tradesClosed++;
+ open=null;
 }
 
 const foldPass=(f:StrategyResult)=>f.trades>=MIN_FOLD_TRADES&&f.returnPct>0&&f.profitFactor>=MIN_PF&&f.maxDrawdownPct<=MAX_DD;
@@ -94,16 +101,19 @@ export async function runValidation(symbol='BTCUSDT',interval='5m',cfg:Partial<B
  const preStart=capacityContext,scored=n-preStart,preBars=Math.floor(scored*PRE_OOS),preEnd=preStart+preBars,foldSize=Math.floor(preBars/FOLDS);
  const funnel=newFunnelCounters(),familyReturns:Tagged[]=[],foldDiagnostics:Record<string,FoldDiagnostic[]>={production:[]},folds:StrategyResult[]=[];
  for(let k=0;k<FOLDS;k++){const a=preStart+k*foldSize,b=k===FOLDS-1?preEnd:a+foldSize,r=simulate(candles,config,a,b,capacityContext,funnel,familyReturns);folds.push(r);foldDiagnostics.production.push({fold:k+1,startBar:a,endBar:b,trades:r.trades,winRate:r.winRate,profitFactor:r.profitFactor,returnPct:r.returnPct,maxDrawdownPct:r.maxDrawdownPct,passesTrades:r.trades>=MIN_FOLD_TRADES,passesReturn:r.returnPct>0,passesProfitFactor:r.profitFactor>=MIN_PF,passesDrawdown:r.maxDrawdownPct<=MAX_DD,passed:foldPass(r)});}
- const allThree=folds.every(foldPass),validation=summarize('production',folds.flatMap(x=>x.tradeReturnsPct),config.initialCapital),test=allThree?simulate(candles,config,preEnd,n,capacityContext,funnel,familyReturns):null,mc=test?monte(test.tradeReturnsPct):monte([]);
- const insufficient=!test||test.trades<MIN_TEST_TRADES||folds.some(f=>f.trades<MIN_FOLD_TRADES),reasons:string[]=[];
+ const allThree=folds.every(foldPass),validation=summarize('production',folds.flatMap(x=>x.tradeReturnsPct),config.initialCapital);
+ // Always evaluate the untouched OOS segment. A failed pre-OOS fold is a rejection reason,
+ // not a reason to pretend the OOS sample does not exist. This preserves diagnostic evidence.
+ const test=simulate(candles,config,preEnd,n,capacityContext,funnel,familyReturns),mc=monte(test.tradeReturnsPct);
+ const insufficient=test.trades<MIN_TEST_TRADES||folds.some(f=>f.trades<MIN_FOLD_TRADES),reasons:string[]=[];
  if(insufficient)reasons.push(`INSUFFICIENT_DATA: OOS sample requires at least ${MIN_TEST_TRADES} total trades and ${MIN_FOLD_TRADES} trades in every chronological pre-OOS fold.`);
- if(!allThree&&!insufficient)reasons.push(`Production Regime Breakout v38 did not pass all ${FOLDS} chronological pre-OOS stability folds.`);
- if(test&&test.profitFactor<MIN_PF)reasons.push(`OOS PF ${test.profitFactor.toFixed(2)} < ${MIN_PF}.`);
- if(test&&test.returnPct<=0)reasons.push(`OOS return ${test.returnPct.toFixed(2)}% is not positive.`);
- if(test&&test.maxDrawdownPct>MAX_DD)reasons.push(`OOS drawdown ${test.maxDrawdownPct.toFixed(2)}% > ${MAX_DD}%.`);
- if(test&&mc.probabilityOfLoss>MAX_MC_LOSS)reasons.push(`Monte Carlo loss probability ${mc.probabilityOfLoss.toFixed(1)}% > ${MAX_MC_LOSS}%.`);
+ if(!allThree&&!insufficient){const failed=foldDiagnostics.production.filter(f=>!f.passed).map(f=>`fold ${f.fold} (trades ${f.trades}, PF ${f.profitFactor.toFixed(2)}, return ${f.returnPct.toFixed(2)}%, DD ${f.maxDrawdownPct.toFixed(2)}%)`);reasons.push(`Production Regime Breakout v38 failed chronological pre-OOS stability gates: ${failed.join('; ')}.`);}
+ if(test.profitFactor<MIN_PF)reasons.push(`OOS PF ${test.profitFactor.toFixed(2)} < ${MIN_PF}.`);
+ if(test.returnPct<=0)reasons.push(`OOS return ${test.returnPct.toFixed(2)}% is not positive.`);
+ if(test.maxDrawdownPct>MAX_DD)reasons.push(`OOS drawdown ${test.maxDrawdownPct.toFixed(2)}% > ${MAX_DD}%.`);
+ if(mc.probabilityOfLoss>MAX_MC_LOSS)reasons.push(`Monte Carlo loss probability ${mc.probabilityOfLoss.toFixed(1)}% > ${MAX_MC_LOSS}%.`);
  const gate:ValidationGate={status:insufficient?'INSUFFICIENT_DATA':reasons.length?'REJECTED':'VALIDATED',reasons,minimumTestTrades:MIN_TEST_TRADES,minimumProfitFactor:MIN_PF,minimumTestReturnPct:0,maximumTestDrawdownPct:MAX_DD,maximumMonteCarloLossProbability:MAX_MC_LOSS};
  const familyPerformance:Record<string,FamilyPerformance>={};for(const fam of ['trend','breakout','retest','compression','reversion'])familyPerformance[fam]=familySummary(familyReturns.filter(x=>x.family===fam).map(x=>x.pct));
  const step=intervalMs(interval);
- return{symbol,interval,candles:n,dataQuality:{startTime:candles[0].openTime,endTime:candles.at(-1)!.openTime,durationDays:(candles.at(-1)!.openTime-candles[0].openTime)/864e5,expectedIntervalMinutes:step/60000,gaps:candles.slice(1).filter((x,i)=>x.openTime-candles[i].openTime!==step).length,duplicateTimestamps:n-new Set(candles.map(x=>x.openTime)).size},costs:{feeBps:config.feeBps,slippageBps:config.slippageBps,roundTripPct:2*(config.feeBps+config.slippageBps)/10000},strategies:[validation],walkForward:{trainBars:preStart,validationBars:foldSize,testBars:n-preEnd,selectedStrategy:!insufficient&&allThree?'Production Regime Breakout v38':'No eligible strategy',validation:allThree?validation:null,test},foldDiagnostics,monteCarlo:mc,gate,generatedAt:new Date().toISOString(),research:{asOf:new Date().toISOString(),dataWindowBars:n,selectionMethod:'v38 fixed 2R final target; short feature lookback plus full causal capacity history; next-open fills; realistic fees/slippage; explicit risk/notional/leverage sizing; chronological pre-OOS stability folds; untouched OOS; complete OOS closed-trade Monte Carlo.',coverage:['real OHLC ATR','full causal capacity history per evaluated bar','cost in R-units with configured maximum','next-open execution','1R/1.5R/2R partial ladder','TP1 breakeven','risk/notional/leverage sizing','strict fold and OOS sample gates','5,000-run Monte Carlo']},signalFunnel:funnel,familyPerformance};
+ return{symbol,interval,candles:n,dataQuality:{startTime:candles[0].openTime,endTime:candles.at(-1)!.openTime,durationDays:(candles.at(-1)!.openTime-candles[0].openTime)/864e5,expectedIntervalMinutes:step/60000,gaps:candles.slice(1).filter((x,i)=>x.openTime-candles[i].openTime!==step).length,duplicateTimestamps:n-new Set(candles.map(x=>x.openTime)).size},costs:{feeBps:config.feeBps,slippageBps:config.slippageBps,roundTripPct:2*(config.feeBps+config.slippageBps)/10000},strategies:[validation],walkForward:{trainBars:preStart,validationBars:foldSize,testBars:n-preEnd,selectedStrategy:!insufficient&&allThree&&gate.status==='VALIDATED'?'Production Regime Breakout v38':'No eligible strategy',validation:validation,test},foldDiagnostics,monteCarlo:mc,gate,generatedAt:new Date().toISOString(),research:{asOf:new Date().toISOString(),dataWindowBars:n,selectionMethod:'v38 fixed 2R final target; short feature lookback plus full causal capacity history; next-open fills; realistic fees/slippage; explicit risk/notional/leverage sizing; chronological pre-OOS stability folds; untouched OOS; complete OOS closed-trade Monte Carlo.',coverage:['real OHLC ATR','full causal capacity history per evaluated bar','cost in R-units with configured maximum','next-open execution','1R/1.5R/2R partial ladder','TP1 breakeven','risk/notional/leverage sizing','strict fold and OOS sample gates','5,000-run Monte Carlo']},signalFunnel:funnel,familyPerformance};
 }
