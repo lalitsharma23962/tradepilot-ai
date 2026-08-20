@@ -32,19 +32,19 @@ export function evaluateV39(input: number[] | MarketBar[], config: Partial<Strat
 
   const p = bars.map(b => b.close), e20 = ema(p, 20), e50 = ema(p, 50), sessionVwap = vwap(bars.slice(-288));
   const recent = bars.slice(-13, -1);
-  const recentEmaTouch = recent.some(b => b.low <= e50 + a14 * 0.50 && b.high >= e50 - a14 * 0.50);
-  const recentVwapTouch = recent.some(b => b.low <= sessionVwap + a14 * 0.50 && b.high >= sessionVwap - a14 * 0.50);
+  const recentEmaTouch = recent.some(b => b.low <= e50 + a14 * 0.80 && b.high >= e50 - a14 * 0.80);
+  const recentVwapTouch = recent.some(b => b.low <= sessionVwap + a14 * 0.80 && b.high >= sessionVwap - a14 * 0.80);
   const pullback = recentEmaTouch || recentVwapTouch;
 
   const last = bars.at(-1)!, prev = bars.at(-2)!;
   const range = Math.max(last.high - last.low, entry * 1e-8), body = Math.abs(last.close - last.open) / range;
   const closeLocLong = (last.close - last.low) / range, closeLocShort = (last.high - last.close) / range;
   const rejection = side === 1 
-    ? last.close > last.open && last.close >= prev.close && body >= 0.25 && closeLocLong >= 0.55 
-    : last.close < last.open && last.close <= prev.close && body >= 0.25 && closeLocShort >= 0.55;
+    ? last.close >= prev.close && closeLocLong >= 0.45 
+    : last.close <= prev.close && closeLocShort >= 0.45;
 
   const vols = bars.slice(-21, -1).map(b => b.volume).filter(v => Number.isFinite(v) && v > 0), avgVol = mean(vols), volRatio = avgVol > 0 ? last.volume / avgVol : 1;
-  const volumeConfirmed = avgVol <= 0 || volRatio >= 0.95;
+  const volumeConfirmed = avgVol <= 0 || volRatio >= 0.80;
 
   const momentumEfficiency = efficiency(p.slice(-24));
   const distanceToEma20 = Math.abs(entry - e20) / Math.max(a14, entry * 1e-8);
@@ -53,16 +53,13 @@ export function evaluateV39(input: number[] | MarketBar[], config: Partial<Strat
   const costFraction = entry * cost / Math.max(Math.abs(entry - signal.stopLoss), 1e-12);
 
   const hourlyConfirmed = signal.reasons.some(r => r === 'Completed-hour confirmation');
-  const pathRequired = FINAL_TARGET_R * Math.abs(entry - signal.stopLoss);
 
-  if (!hourlyConfirmed) return wait(signal, ['v39 rejected: no completed 1h trend confirmation']);
-  if (adx14 < 18) return wait(signal, [`v39 rejected: 5m ADX ${adx14.toFixed(1)} < 18 trend-strength floor`]);
+  if (adx14 < 14) return wait(signal, [`v39 rejected: 5m ADX ${adx14.toFixed(1)} < 14 trend-strength floor`]);
   if (!pullback) return wait(signal, ['v39 rejected: no recent EMA50/VWAP pullback']);
   if (!rejection) return wait(signal, ['v39 rejected: no decisive pullback rejection candle']);
-  if (!volumeConfirmed) return wait(signal, [`v39 rejected: volume ratio ${volRatio.toFixed(2)} < 0.95`]);
-  if (atrRatio < 0.80) return wait(signal, [`v39 rejected: ATR regime is contracting (${atrRatio.toFixed(2)}x)`]);
-  if (momentumEfficiency < 0.10) return wait(signal, [`v39 rejected: directional efficiency ${momentumEfficiency.toFixed(2)} < 0.10`]);
-  if (distanceToEma20 > 1.5) return wait(signal, ['v39 rejected: entry is too extended from EMA20']);
+  if (!volumeConfirmed) return wait(signal, [`v39 rejected: volume ratio ${volRatio.toFixed(2)} < 0.80`]);
+  if (atrRatio < 0.60) return wait(signal, [`v39 rejected: ATR regime is contracting (${atrRatio.toFixed(2)}x)`]);
+  if (distanceToEma20 > 2.5) return wait(signal, ['v39 rejected: entry is too extended from EMA20']);
   if (costFraction > TRADING_CONFIG.maxCostFractionOfRisk) return wait(signal, [`v39 rejected: round-trip cost is ${(costFraction * 100).toFixed(0)}% of 1R`]);
   if (signal.score < TRADING_CONFIG.minScore) return wait(signal, [`v39 rejected: conviction score ${signal.score} < ${TRADING_CONFIG.minScore}`]);
 
@@ -85,9 +82,8 @@ export function evaluateV39(input: number[] | MarketBar[], config: Partial<Strat
     finalTargetR: FINAL_TARGET_R,
     reasons: [
       ...signal.reasons,
-      'v39: hourly trend + ADX + structural pullback + rejection + volume',
+      'v39: relaxed pullback + rejection + volume',
       'Asymmetric 3R/5R/10R ladder',
-      'Validation remains the profitability gate',
     ],
   };
 }
