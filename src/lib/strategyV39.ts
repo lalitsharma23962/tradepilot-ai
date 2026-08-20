@@ -4,6 +4,7 @@ export interface StrategyConfig {
   atrPeriod?: number;
   atrMultStop?: number;
   atrMultTp?: number;
+  minRiskReward?: number;
 }
 
 export interface TargetLadderStep {
@@ -27,69 +28,167 @@ export interface StrategySignalV39 {
   reasons: string[];
 }
 
-export function evaluateV39(input: number[] | MarketBar[], config: Partial<StrategyConfig> = {}): StrategySignalV39 {
-  const bars = (Array.isArray(input) && typeof input[0] === 'object' ? (input as MarketBar[]) : []).filter(
-    (b) => Number.isFinite(b.close) && b.close > 0
-  );
+export function evaluateV39(
+  input: number[] | MarketBar[],
+  config: Partial<StrategyConfig> = {}
+): StrategySignalV39 {
+  const atrPeriod = config.atrPeriod ?? 14;
+  const atrMultStop = config.atrMultStop ?? 1.5;
+  const atrMultTp = config.atrMultTp ?? 3.0;
+  const minRR = config.minRiskReward ?? 1.5;
 
-  if (bars.length < 50) {
+  let bars: MarketBar[] = [];
+  if (Array.isArray(input) && input.length > 0) {
+    if (typeof input[0] === 'number') {
+      bars = (input as number[]).map((val) => ({
+        open: val,
+        high: val,
+        low: val,
+        close: val,
+        volume: 0,
+      }));
+    } else {
+      bars = input as MarketBar[];
+    }
+  }
+
+  if (bars.length <= atrPeriod) {
     return {
       action: 'WAIT',
-      family: 'trend',
-      strategy: 'Trend Pullback v39',
+      family: 'TrendFollow',
+      strategy: 'V39_ATR_Breakout',
       entry: 0,
       stopLoss: 0,
       takeProfit: 0,
       riskReward: 0,
       score: 0,
       targets: [],
-      finalTargetR: 2,
-      reasons: ['Insufficient bars'],
+      finalTargetR: 0,
+      reasons: ['Insufficient historical data for ATR calculation'],
     };
   }
 
-  const last = bars[bars.length - 1];
-  const entry = last.close;
-
-  // 14-period ATR calculation to set dynamic stops
-  const slice = bars.slice(-15);
-  let totalRange = 0;
-  for (let i = 1; i < slice.length; i++) {
-    totalRange += Math.max(slice[i].high - slice[i].low, Math.abs(slice[i].high - slice[i - 1].close));
+  const trValues: number[] = [];
+  for (let i = 1; i < bars.length; i++) {
+    const current = bars[i];
+    const prev = bars[i - 1];
+    const tr = Math.max(
+      current.high - current.low,
+      Math.abs(current.high - prev.close),
+      Math.abs(current.low - prev.close)
+    );
+    trValues.push(tr);
   }
-  const atr = totalRange / 14 || entry * 0.005;
 
-  const stopLoss = entry - atr * 1.8;
-  const takeProfit = entry + atr * 3.6;
+  const recentTRs = trValues.slice(-atrPeriod);
+  const atr = recentTRs.reduce((sum, val) => sum + val, 0) / atrPeriod;
+
+  const lastBar = bars[bars.length - 1];
+  const prevBar = bars[bars.length - 2];
+  const entry = lastBar.close;
+
+  const smaPeriod = Math.min(20, bars.length);
+  const sma =
+    bars.slice(-smaPeriod).reduce((sum, b) => sum + b.close, 0) / smaPeriod;
+
+  let action: 'LONG' | 'SHORT' | 'WAIT' = 'WAIT';
+  const reasons: string[] = [];
+
+  if (lastBar.close > sma && lastBar.close > prevBar.high) {
+    action = 'LONG';
+    reasons.push('Price closed above SMA and previous bar high');
+  } else if (lastBar.close < sma && lastBar.close < prevBar.low) {
+    action = 'SHORT';
+    reasons.push('Price closed below SMA and previous bar low');
+  } else {
+    reasons.push('Price consolidating within range');
+  }
+
+  if (action === 'WAIT' || atr === 0) {
+    return {
+      action: 'WAIT',
+      family: 'TrendFollow',
+      strategy: 'V39_ATR_Breakout',
+      entry,
+      stopLoss: 0,
+      takeProfit: 0,
+      riskReward: 0,
+      score: 0,
+      targets: [],
+      finalTargetR: 0,
+      reasons,
+    };
+  }
+
+  const stopDistance = atr * atrMultStop;
+  const tpDistance = atr * atrMultTp;
+  const stopLoss = action === 'LONG' ? entry - stopDistance : entry + stopDistance;
+  const takeProfit = action === 'LONG' ? entry + tpDistance : entry - tpDistance;
+  const riskReward = tpDistance / stopDistance;
+
+  if (riskReward < minRR) {
+    return {
+      action: 'WAIT',
+      family: 'TrendFollow',
+      strategy: 'V39_ATR_Breakout',
+      entry,
+      stopLoss,
+      takeProfit,
+      riskReward,
+      score: 0,
+      targets: [],
+      finalTargetR: 0,
+      reasons: ['Risk to Reward ratio below threshold'],
+    };
+  }
+
+  const targets: TargetLadderStep[] = [
+    {
+      r: 1,
+      fraction: 0.5,
+      price: action === 'LONG' ? entry + stopDistance : entry - stopDistance,
+      moveStopToBreakeven: true,
+    },
+    {
+      r: atrMultTp / atrMultStop,
+      fraction: 0.5,
+      price: takeProfit,
+      moveStopToBreakeven: false,
+    },
+  ];
 
   return {
-    action: 'LONG',
-    family: 'trend',
-    strategy: 'Trend Pullback v39',
+    action,
+    family: 'TrendFollow',
+    strategy: 'V39_ATR_Breakout',
     entry,
     stopLoss,
     takeProfit,
-    riskReward: 2.0,
-    score: 85,
-    targets: [
-      { r: 0.5, fraction: 0.25, price: entry + atr * 0.9, moveStopToBreakeven: false },
-      { r: 1.0, fraction: 0.25, price: entry + atr * 1.8, moveStopToBreakeven: true },
-      { r: 1.5, fraction: 0.25, price: entry + atr * 2.7, moveStopToBreakeven: false },
-      { r: 2.0, fraction: 0.25, price: entry + atr * 3.6, moveStopToBreakeven: false },
-    ],
-    finalTargetR: 2,
-    reasons: ['Valid ATR trend-pullback structure'],
+    riskReward,
+    score: Math.min(100, Math.round((riskReward / 2) * 80)),
+    targets,
+    finalTargetR: atrMultTp / atrMultStop,
+    reasons,
   };
 }
 
-export function evaluateProductionStrategy(input: number[] | MarketBar[], config: Partial<StrategyConfig> = {}): StrategySignalV39 {
+export function evaluateProductionStrategy(
+  input: number[] | MarketBar[],
+  config: Partial<StrategyConfig> = {}
+): StrategySignalV39 {
   return evaluateV39(input, config);
 }
 
-export function evaluateResearchStrategy(input: number[] | MarketBar[], config: Partial<StrategyConfig> = {}): StrategySignalV39 {
+export function evaluateResearchStrategy(
+  input: number[] | MarketBar[],
+  config: Partial<StrategyConfig> = {}
+): StrategySignalV39 {
   return evaluateProductionStrategy(input, config);
 }
 
-export function evaluateStrategy(input: number[] | MarketBar[], config: Partial<StrategyConfig> = {}): StrategySignalV39 {
+export function evaluateStrategy(
+  input: number[] | MarketBar[],
+  config: Partial<StrategyConfig> = {}
+): StrategySignalV39 {
   return evaluateProductionStrategy(input, config);
 }
