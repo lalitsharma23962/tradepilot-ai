@@ -21,7 +21,7 @@ export const TRADING_CONFIG = {
   swingLookback: 5,
   lookback: 400,
   paperStartingCapital: 50 as number,
-  riskPerTradePct: .5,
+  riskPerTradePct: 0.5,
   maxAllocationPct: 20,
   maxPositions: 1,
   cooldownBars: 12,
@@ -35,22 +35,14 @@ export const TRADING_CONFIG = {
   maxAccountDrawdownPct: 12,
   // Binance Spot-supported intervals only. 45m and 3h are not valid Spot kline intervals.
   timeframes: ['5m', '15m', '30m', '1h', '2h', '4h', '1d'] as const,
-  maxBarsInTrade: {
-    '5m': 720,
-    '15m': 240,
-    '30m': 160,
-    '1h': 120,
-    '2h': 80,
-    '4h': 48,
-    '1d': 20
-  } as Record<string, number>,
+  maxBarsInTrade: { '5m': 720, '15m': 240, '30m': 160, '1h': 120, '2h': 80, '4h': 48, '1d': 20 } as Record<string, number>,
   capacitySamples: 20,
   minFoldTrades: 15,
   minTestTrades: 40,
   minProfitFactor: 1.50,
   maxDrawdownPct: 12,
   maxMonteCarloLossProbability: 15,
-  preOosFraction: .70,
+  preOosFraction: 0.70,
   folds: 3,
   monteCarloRuns: 5000,
 } as const;
