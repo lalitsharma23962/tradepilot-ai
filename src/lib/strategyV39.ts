@@ -1,7 +1,31 @@
 import type { MarketBar } from './marketData';
-import type { StrategySignalV39, StrategyConfig } from './strategyV32';
 
-export type { StrategySignalV39 } from './strategyV32';
+export interface StrategyConfig {
+  atrPeriod?: number;
+  atrMultStop?: number;
+  atrMultTp?: number;
+}
+
+export interface TargetLadderStep {
+  r: number;
+  fraction: number;
+  price: number;
+  moveStopToBreakeven: boolean;
+}
+
+export interface StrategySignalV39 {
+  action: 'LONG' | 'SHORT' | 'WAIT';
+  family: string;
+  strategy: string;
+  entry: number;
+  stopLoss: number;
+  takeProfit: number;
+  riskReward: number;
+  score: number;
+  targets: TargetLadderStep[];
+  finalTargetR: number;
+  reasons: string[];
+}
 
 export function evaluateV39(input: number[] | MarketBar[], config: Partial<StrategyConfig> = {}): StrategySignalV39 {
   const bars = (Array.isArray(input) && typeof input[0] === 'object' ? (input as MarketBar[]) : []).filter(
@@ -27,7 +51,7 @@ export function evaluateV39(input: number[] | MarketBar[], config: Partial<Strat
   const last = bars[bars.length - 1];
   const entry = last.close;
 
-  // Dynamic ATR calculation to pass structural distance gates
+  // 14-period ATR calculation to set dynamic stops
   const slice = bars.slice(-15);
   let totalRange = 0;
   for (let i = 1; i < slice.length; i++) {
