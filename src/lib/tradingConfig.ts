@@ -1,31 +1,30 @@
 export type TradingMode='PAPER';
 
 /**
- * v38: cost-aware multi-timeframe paper-trading configuration.
- * The final risk/reward target is fixed at 2R; profits are taken progressively
- * at 0.5R, 1R, 1.5R and 2R. These values define an economic/risk envelope,
- * not a promise of profitability.
+ * v39: selective BTCUSDT trend-pullback configuration.
+ * The economic model uses an asymmetric 3R / 5R / 10R ladder. A setup must
+ * pass strict entry/regime filters and the validation gate before production.
  */
 export const TRADING_CONFIG={
  mode:'PAPER' as TradingMode,
- strategyVersion:'v38',
- minScore:68,
- ultraScore:92,
- researchMinRiskReward:2,
- researchMaxRiskReward:2,
- productionMinRiskReward:2,
- productionMaxRiskReward:2,
+ strategyVersion:'v39',
+ minScore:86,
+ ultraScore:96,
+ researchMinRiskReward:3,
+ researchMaxRiskReward:10,
+ productionMinRiskReward:10,
+ productionMaxRiskReward:10,
  atrStopMultiple:1.5,
- minStopAtr:.65,
- maxStructuralRiskAtr:3.2,
- maxCostFractionOfRisk:.80,
+ minStopAtr:.80,
+ maxStructuralRiskAtr:2.4,
+ maxCostFractionOfRisk:.35,
  swingLookback:5,
  lookback:400,
  paperStartingCapital:50 as number,
  riskPerTradePct:.5,
  maxAllocationPct:20,
  maxPositions:1,
- cooldownBars:6,
+ cooldownBars:12,
  feeBps:10,
  slippageBps:2,
  minNotionalUsd:5,
@@ -33,16 +32,16 @@ export const TRADING_CONFIG={
  minLiquidationDistanceAtr:6,
  maxDailyLossPct:2,
  maxConsecutiveLosses:4,
- maxAccountDrawdownPct:15,
+ maxAccountDrawdownPct:12,
  // Binance Spot-supported intervals only. 45m and 3h are not valid Spot kline intervals.
  timeframes:['5m','15m','30m','1h','2h','4h','1d'] as const,
  maxBarsInTrade:{'5m':720,'15m':240,'30m':160,'1h':120,'2h':80,'4h':48,'1d':20} as Record<string,number>,
  capacitySamples:20,
- minFoldTrades:12,
- minTestTrades:30,
- minProfitFactor:1.05,
- maxDrawdownPct:20,
- maxMonteCarloLossProbability:45,
+ minFoldTrades:15,
+ minTestTrades:40,
+ minProfitFactor:1.50,
+ maxDrawdownPct:12,
+ maxMonteCarloLossProbability:15,
  preOosFraction:.70,
  folds:3,
  monteCarloRuns:5000,
