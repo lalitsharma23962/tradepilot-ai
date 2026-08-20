@@ -76,10 +76,10 @@ export function evaluateV32(input: number[] | MarketBar[], config: Partial<Strat
   const e50 = ema(p, 50);
   const a14 = atr(bars, 14);
 
-  const isLong = entry > e20 && e20 > e50;
-  const isShort = entry < e20 && e20 < e50;
+  const isLong = entry > e20;
+  const isShort = entry < e20;
 
-  if (!isLong && !isShort) return wait(undefined, ['No clear EMA alignment']);
+  if (!isLong && !isShort) return wait(undefined, ['No EMA direction']);
 
   const side = isLong ? 1 : -1;
   const stopAtr = config.minStopAtr ?? TRADING_CONFIG.minStopAtr ?? 0.5;
