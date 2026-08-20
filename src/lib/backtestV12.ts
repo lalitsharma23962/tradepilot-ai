@@ -1,5 +1,4 @@
 import type { MarketBar } from './marketData';
-import { TRADING_CONFIG } from './tradingConfig';
 
 export interface BacktestResult {
   totalTrades: number;
@@ -11,7 +10,13 @@ export interface BacktestResult {
 
 export function runBacktestV12(bars: MarketBar[]): BacktestResult {
   if (!bars || bars.length < 50) {
-    return { totalTrades: 0, winRate: 0, profitFactor: 0, totalReturnPct: 0, maxDrawdownPct: 0 };
+    return {
+      totalTrades: 0,
+      winRate: 0,
+      profitFactor: 0,
+      totalReturnPct: 0,
+      maxDrawdownPct: 0,
+    };
   }
 
   return {
