@@ -8,8 +8,8 @@ export const TRADING_CONFIG={
  researchMaxRiskReward:3,
  productionMinRiskReward:1.5,
  productionMaxRiskReward:3,
- atrStopMultiple:1.5,
- maxStructuralRiskAtr:1.35,
+ atrStopMultiple:0.8,
+ maxStructuralRiskAtr:2.50,
  swingLookback:5,
  // 720 x 5m bars = 60 hours of context, allowing the strategy to build
  // a higher-timeframe (1h) regime filter without changing paper execution cadence.
