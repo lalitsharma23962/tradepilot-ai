@@ -10,7 +10,7 @@ import { HistoryPage } from '@/pages/HistoryPage';
 import { AnalyticsPage } from '@/pages/AnalyticsPage';
 import { SettingsPage } from '@/pages/SettingsPage';
 
-function App() {
+export default function App() {
   const [page, setPage] = useState<Page>('dashboard');
 
   return (
@@ -33,5 +33,3 @@ function App() {
     </AppProvider>
   );
 }
-
-export default App;
