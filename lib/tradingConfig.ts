@@ -1,34 +1,48 @@
-export type TradingMode='PAPER';
-export const TRADING_CONFIG={
- mode:'PAPER' as TradingMode,
- strategyVersion:'v28',
- minScore:78,
- ultraScore:96,
- researchMinRiskReward:1.5,
- researchMaxRiskReward:3,
- productionMinRiskReward:1.5,
- productionMaxRiskReward:3,
- atrStopMultiple:0.8,
- maxStructuralRiskAtr:2.50,
- swingLookback:5,
- // 720 x 5m bars = 60 hours of context, allowing the strategy to build
- // a higher-timeframe (1h) regime filter without changing paper execution cadence.
- lookback:720,
- riskPerTradePct:.25,
- maxAllocationPct:20,
- maxPositions:3,
- cooldownBars:3,
- feeBps:10,
- slippageBps:2,
- maxBarsInTrade:{'5m':1440,'15m':480,'1h':240,'4h':180} as Record<string,number>,
- minFoldTrades:12,
- minTestTrades:30,
- minProfitFactor:1.05,
- maxDrawdownPct:20,
- maxMonteCarloLossProbability:45,
- preOosFraction:.70,
- folds:3,
- monteCarloRuns:5000,
+export type TradingMode = 'PAPER';
+
+export const TRADING_CONFIG = {
+  mode: 'PAPER' as TradingMode,
+  strategyVersion: 'v39',
+  minScore: 78,
+  ultraScore: 96,
+  researchMinRiskReward: 3,
+  researchMaxRiskReward: 10,
+  productionMinRiskReward: 10,
+  productionMaxRiskReward: 10,
+  atrStopMultiple: 0.8,
+  minStopAtr: 0.50,
+  maxStructuralRiskAtr: 2.5,
+  maxCostFractionOfRisk: 0.50,
+  swingLookback: 5,
+  lookback: 400,
+  paperStartingCapital: 50 as number,
+  riskPerTradePct: .5,
+  maxAllocationPct: 20,
+  maxPositions: 1,
+  cooldownBars: 12,
+  feeBps: 10,
+  slippageBps: 2,
+  minNotionalUsd: 5,
+  maxLeverage: 5,
+  minLiquidationDistanceAtr: 6,
+  maxDailyLossPct: 2,
+  maxConsecutiveLosses: 4,
+  maxAccountDrawdownPct: 12,
+  timeframes: ['5m', '15m', '30m', '1h', '2h', '4h', '1d'] as const,
+  maxBarsInTrade: { '5m': 720, '15m': 240, '30m': 160, '1h': 120, '2h': 80, '4h': 48, '1d': 20 } as Record<string, number>,
+  capacitySamples: 20,
+  minFoldTrades: 15,
+  minTestTrades: 40,
+  minProfitFactor: 1.50,
+  maxDrawdownPct: 12,
+  maxMonteCarloLossProbability: 15,
+  preOosFraction: .70,
+  folds: 3,
+  monteCarloRuns: 5000,
 } as const;
-export type TradingConfig=typeof TRADING_CONFIG;
-export function resolveTradingConfig(overrides:Partial<TradingConfig>={}):TradingConfig{return {...TRADING_CONFIG,...overrides};}
+
+export type TradingConfig = typeof TRADING_CONFIG;
+
+export function resolveTradingConfig(overrides: Partial<TradingConfig> = {}): TradingConfig {
+  return { ...TRADING_CONFIG, ...overrides };
+}
