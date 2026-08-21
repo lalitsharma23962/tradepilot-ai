@@ -21,7 +21,7 @@ function aggregate(bars:MarketBar[],size:number){const out:MarketBar[]=[];for(le
 function wait(entry:number,reasons:string[]):StrategySignalV39{return{action:'WAIT',family:'TrendPullback',strategy:'Trend Pullback v39',entry,stopLoss:0,takeProfit:0,riskReward:0,score:0,targets:[],finalTargetR:0,reasons};}
 
 export function evaluateV39(input:number[]|MarketBar[],config:Partial<StrategyConfig>={}):StrategySignalV39{
- const period=config.atrPeriod??14,stopMult=config.atrMultStop??1.5,minScore=config.minScore??80;
+ const period=config.atrPeriod??14,stopMult=config.atrMultStop??1.5,minScore=config.minScore??82;
  let bars:MarketBar[]=[];if(Array.isArray(input)&&input.length)bars=typeof input[0]==='number'?(input as number[]).map((v,i)=>({openTime:i,open:v,high:v,low:v,close:v,volume:0})):input as MarketBar[];
  if(bars.length<240)return wait(0,['Insufficient 5m history for multi-timeframe regime analysis']);
  const h1=config.htf1h??aggregate(bars,12),h4=config.htf4h??aggregate(bars,48);if(h1.length<210||h4.length<210)return wait(bars.at(-1)?.close??0,['Insufficient completed 1h/4h history for EMA 200 confirmation']);
@@ -41,6 +41,6 @@ export function evaluateV39(input:number[]|MarketBar[],config:Partial<StrategyCo
  if(score<minScore)return wait(entry,['Conviction score below threshold']);
  return{action,family:'TrendPullback',strategy:'Trend Pullback v39',entry,stopLoss:stop,takeProfit:tp,riskReward:2,score,targets:[{r:2,fraction:1,price:tp,moveStopToBreakeven:false}],finalTargetR:2,reasons};
 }
-export function evaluateProductionStrategy(input:number[]|MarketBar[],config:Partial<StrategyConfig>={}):StrategySignalV39{return evaluateV39(input,{...config,minRiskReward:2,minScore:config.minScore??80});}
+export function evaluateProductionStrategy(input:number[]|MarketBar[],config:Partial<StrategyConfig>={}):StrategySignalV39{return evaluateV39(input,{...config,minRiskReward:2,minScore:config.minScore??82});}
 export function evaluateResearchStrategy(input:number[]|MarketBar[],config:Partial<StrategyConfig>={}):StrategySignalV39{return evaluateProductionStrategy(input,config);}
 export function evaluateStrategy(input:number[]|MarketBar[],config:Partial<StrategyConfig>={}):StrategySignalV39{return evaluateProductionStrategy(input,config);}
