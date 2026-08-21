@@ -6,6 +6,8 @@ import type { AiRecommendation, MarketTick, Position } from './types';
 
 const SYMBOL = 'BTC/USDT';
 const DATA_SYMBOL = 'BTCUSDT';
+const MIN_CONVICTION_SCORE = 82;
+const COOLDOWN_BARS = 12;
 const priceStates = new Map<string, { price: number; history: { ts: number; price: number }[] }>();
 let latestSignal: StrategySignalV39 | null = null;
 let latestBars: MarketBar[] = [];
@@ -15,6 +17,7 @@ let ticking = false;
 let tickTimer: ReturnType<typeof setInterval> | null = null;
 let snapshotTimer: ReturnType<typeof setInterval> | null = null;
 let lastSignalBar = 0;
+let lastEntryBar = 0;
 
 function round(v: number, dp = 2) { const f = 10 ** dp; return Math.round(v * f) / f; }
 function decimals(price: number) { return price >= 100 ? 2 : 4; }
@@ -109,20 +112,24 @@ async function tick() {
     await recomputeEquity();
     const open=(await getPositions()).length;
     const currentBar=bars5.at(-1)?.openTime??0;
-    if(open<account.max_positions && currentBar!==lastSignalBar){
-      latestSignal=evaluateV39(bars5,{htf1h:bars1h,htf4h:bars4h,minRiskReward:2,minScore:Math.max(80,account.confidence_threshold_pct)});
+    const configuredThreshold=Number(account.confidence_threshold_pct);
+    const convictionThreshold=Math.max(MIN_CONVICTION_SCORE,Number.isFinite(configuredThreshold)?configuredThreshold:MIN_CONVICTION_SCORE);
+    const cooldownMs=COOLDOWN_BARS*5*60*1000;
+    const cooldownActive=lastEntryBar>0 && currentBar-lastEntryBar<cooldownMs;
+    if(open<account.max_positions && currentBar!==lastSignalBar && !cooldownActive){
+      latestSignal=evaluateV39(bars5,{htf1h:bars1h,htf4h:bars4h,minRiskReward:2,minScore:convictionThreshold});
       lastSignalBar=currentBar;
-      if(latestSignal.action!=='WAIT' && latestSignal.score>=Math.max(80,account.confidence_threshold_pct)) await tryOpenPosition(account,latestSignal);
+      if(latestSignal.action!=='WAIT' && latestSignal.score>=convictionThreshold) await tryOpenPosition(account,latestSignal,currentBar);
     }
     tickCount++;
-    await execute(`UPDATE tp_account SET last_tick_at=now() WHERE id=1;`);
+    await execute(`UPDATE tp_account SET last_tick_at=$1 WHERE id=1;`,[new Date().toISOString()]);
   }catch(err){console.error('[engine] tick error:',err);}finally{ticking=false;}
 }
 
-async function tryOpenPosition(account: Awaited<ReturnType<typeof getAccount>>, signal: StrategySignalV39) {
+async function tryOpenPosition(account: Awaited<ReturnType<typeof getAccount>>, signal: StrategySignalV39, signalBar: number) {
   const positions=await getPositions(); if(positions.length>=account.max_positions)return;
   if(await riskBlocked(account)) return;
-  if(signal.action==='WAIT'||signal.riskReward!==2)return;
+  if(signal.action==='WAIT'||signal.riskReward!==2||signal.score<MIN_CONVICTION_SCORE)return;
   const market=priceStates.get(SYMBOL); if(!market)return;
   const rawEntry=signal.entry;
   const entry=round(slippagePrice(rawEntry,signal.action,account.slippage_bps,true),2);
@@ -141,6 +148,7 @@ async function tryOpenPosition(account: Awaited<ReturnType<typeof getAccount>>, 
   const target=round(signal.action==='LONG'?entry+targetDistance:entry-targetDistance,2);
   await execute(`INSERT INTO tp_positions (symbol,side,quantity,entry_price,current_price,notional,unrealized_pnl,stop_loss,take_profit,strategy,status) VALUES ($1,$2,$3,$4,$4,$5,0,$6,$7,$8,'OPEN');`,[SYMBOL,signal.action,quantity,entry,notional,stop,target,'Trend Pullback v39']);
   await execute(`UPDATE tp_account SET cash=cash-$1 WHERE id=1;`,[notional]);
+  lastEntryBar=signalBar;
 }
 
 async function recomputeEquity(){
@@ -172,8 +180,8 @@ export async function resetAccount(){if(engineRunning)await stopEngine();await r
 
 export function getAiRecommendation(symbol?:string):AiRecommendation{
   const p=priceStates.get(SYMBOL); const s=symbol&&symbol!==SYMBOL?null:latestSignal;
-  if(!p||!s)return{symbol:SYMBOL,action:'WAIT',confidence:0,threshold:80,entry:0,stop_loss:0,take_profit:0,risk_score:0,explanation:'Waiting for a completed BTCUSDT candle and validated v39 setup.'};
-  return{symbol:SYMBOL,action:s.action,confidence:s.score/100,threshold:0.8,entry:s.entry,stop_loss:s.stopLoss,take_profit:s.takeProfit,risk_score:Math.max(0,10-s.score/10),targets:s.targets.map(t=>({r:t.r,fraction:t.fraction,price:t.price})),explanation:s.reasons.join('; ')};
+  if(!p||!s)return{symbol:SYMBOL,action:'WAIT',confidence:0,threshold:MIN_CONVICTION_SCORE/100,entry:0,stop_loss:0,take_profit:0,risk_score:0,explanation:'Waiting for a completed BTCUSDT candle and validated v39 setup.'};
+  return{symbol:SYMBOL,action:s.action,confidence:s.score/100,threshold:MIN_CONVICTION_SCORE/100,entry:s.entry,stop_loss:s.stopLoss,take_profit:s.takeProfit,risk_score:Math.max(0,10-s.score/10),targets:s.targets.map(t=>({r:t.r,fraction:t.fraction,price:t.price})),explanation:s.reasons.join('; ')};
 }
 export function getTickCount(){return tickCount;}
 
