@@ -25,6 +25,23 @@ function slippagePrice(price: number, side: 'LONG' | 'SHORT', bps: number, isEnt
 }
 function calcPnl(pos: Position, price: number) { return round((pos.side === 'LONG' ? 1 : -1) * (price - pos.entry_price) * pos.quantity, 2); }
 
+async function riskBlocked(account: Awaited<ReturnType<typeof getAccount>>): Promise<boolean> {
+  if (account.risk_pause_until && new Date(account.risk_pause_until).getTime() > Date.now()) return true;
+  const rows = await query<{ pnl: string | number; losses: string | number }>(
+    `SELECT COALESCE(SUM(pnl),0) AS pnl, COUNT(*) FILTER (WHERE pnl < 0) AS losses
+     FROM tp_trades WHERE closed_at >= date_trunc('day', now());`
+  );
+  const todayPnl = Number(rows[0]?.pnl ?? 0);
+  const dailyLossPct = account.equity > 0 ? Math.max(0, -todayPnl / account.equity * 100) : 0;
+  if (dailyLossPct >= account.loss_limit_pct) return true;
+
+  const recent = await query<{ pnl: string | number }>(
+    `SELECT pnl FROM tp_trades ORDER BY closed_at DESC LIMIT 4;`
+  );
+  const consecutiveLosses = recent.length >= 4 && recent.every(r => Number(r.pnl) < 0);
+  return consecutiveLosses;
+}
+
 function setLatestPrice(price: number, ts: number) {
   const old = priceStates.get(SYMBOL) ?? { price, history: [] };
   old.price = price; old.history.push({ ts, price });
@@ -104,6 +121,7 @@ async function tick() {
 
 async function tryOpenPosition(account: Awaited<ReturnType<typeof getAccount>>, signal: StrategySignalV39) {
   const positions=await getPositions(); if(positions.length>=account.max_positions)return;
+  if(await riskBlocked(account)) return;
   if(signal.action==='WAIT'||signal.riskReward!==2)return;
   const market=priceStates.get(SYMBOL); if(!market)return;
   const rawEntry=signal.entry;
